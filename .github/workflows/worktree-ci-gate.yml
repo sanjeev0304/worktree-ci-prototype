@@ -1,0 +1,155 @@
+name: Worktree CI Gate
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  safety-gate:
+    name: Safety & Blast Radius Gate
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out code (full history for diffing)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run smoke test (node tests/verify-app.js)
+        id: smoke
+        continue-on-error: true
+        run: node tests/verify-app.js
+
+      - name: Analyse blast radius and write executive report
+        env:
+          SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+
+          CORE_FILE="src/core-engine.js"
+          MAX_LINES=80
+
+          git fetch --no-tags origin main
+          RANGE="origin/main...HEAD"
+
+          # Per-file added/removed counts. Binary files show "-", counted as 0.
+          NUMSTAT="$(git diff --numstat "$RANGE")"
+
+          ADDED=0
+          REMOVED=0
+          FILE_ROWS=""
+          FILE_COUNT=0
+          CORE_TOUCHED=false
+
+          while IFS=$'\t' read -r add del file; do
+            [ -z "${file:-}" ] && continue
+            [ "$add" = "-" ] && add=0
+            [ "$del" = "-" ] && del=0
+            ADDED=$((ADDED + add))
+            REMOVED=$((REMOVED + del))
+            FILE_COUNT=$((FILE_COUNT + 1))
+            marker=""
+            if [ "$file" = "$CORE_FILE" ]; then
+              CORE_TOUCHED=true
+              marker=" ⛔ **RESTRICTED**"
+            fi
+            FILE_ROWS="${FILE_ROWS}| \`${file}\`${marker} | +${add} | -${del} |"$'\n'
+          done <<< "$NUMSTAT"
+
+          # Also catch renames/deletes of the core file.
+          if git diff --name-only "$RANGE" | grep -qx "$CORE_FILE"; then
+            CORE_TOUCHED=true
+          fi
+
+          TOTAL=$((ADDED + REMOVED))
+
+          # Decide verdict.
+          FAIL=false
+          REASONS=""
+          if [ "$CORE_TOUCHED" = true ]; then
+            FAIL=true
+            CORE_STATUS="🔴 **VIOLATION**: \`${CORE_FILE}\` was modified. Only the Lead Architect (Person A) may change the core layer."
+            REASONS="${REASONS}- Restricted core file \`${CORE_FILE}\` was modified."$'\n'
+          else
+            CORE_STATUS="🟢 **SAFE**: \`${CORE_FILE}\` was not touched."
+          fi
+
+          if [ "$TOTAL" -gt "$MAX_LINES" ]; then
+            FAIL=true
+            SIZE_STATUS="🔴 **TOO LARGE**: ${TOTAL} lines changed (limit ${MAX_LINES})."
+            REASONS="${REASONS}- ${TOTAL} lines changed, over the ${MAX_LINES}-line limit. Split this PR."$'\n'
+          else
+            SIZE_STATUS="🟢 **WITHIN LIMIT**: ${TOTAL} of ${MAX_LINES} lines."
+          fi
+
+          if [ "$SMOKE_OUTCOME" = "success" ]; then
+            SMOKE_STATUS="🟢 **PASSED**"
+          else
+            FAIL=true
+            SMOKE_STATUS="🔴 **FAILED**: the app crashed or a smoke check failed."
+            REASONS="${REASONS}- Smoke test \`node tests/verify-app.js\` failed."$'\n'
+          fi
+
+          [ -z "$FILE_ROWS" ] && FILE_ROWS="| _(no file changes)_ | | |"$'\n'
+
+          {
+            echo "# 🛡️ Executive Safety & Blast Radius Report"
+            echo
+            echo "**PR #${PR_NUMBER}:** ${PR_TITLE}  "
+            echo "**Author:** @${PR_AUTHOR} · **Branch:** \`${HEAD_REF}\` → \`main\`"
+            echo
+            echo "## a) Files modified (${FILE_COUNT})"
+            echo
+            echo "| File | Added | Removed |"
+            echo "|---|---:|---:|"
+            printf '%s' "$FILE_ROWS"
+            echo
+            echo "## b) Lines changed"
+            echo
+            echo "| Added | Removed | Total | Limit |"
+            echo "|---:|---:|---:|---:|"
+            echo "| +${ADDED} | -${REMOVED} | **${TOTAL}** | ${MAX_LINES} |"
+            echo
+            echo "${SIZE_STATUS}"
+            echo
+            echo "## c) Core architecture status"
+            echo
+            echo "${CORE_STATUS}"
+            echo
+            echo "**Smoke test:** ${SMOKE_STATUS}"
+            echo
+            echo "## d) Final verdict for Lead Architect"
+            echo
+            if [ "$FAIL" = true ]; then
+              echo "> ### ❌ BLOCKED: do not merge"
+              echo ">"
+              echo "> This PR breaks the safety guardrails in \`docs/SAFETY_GUARDRAILS.md\`:"
+              echo
+              printf '%s' "$REASONS"
+            else
+              echo "> ### ✅ APPROVED FOR REVIEW"
+              echo ">"
+              echo "> Core layer untouched, blast radius within limits, smoke test passed. Safe to review and merge."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "Files: ${FILE_COUNT} | +${ADDED} -${REMOVED} = ${TOTAL} | core touched: ${CORE_TOUCHED} | smoke: ${SMOKE_OUTCOME}"
+
+          if [ "$FAIL" = true ]; then
+            echo "::error title=Worktree CI Gate::PR blocked. Core touched: ${CORE_TOUCHED}, lines changed: ${TOTAL} (limit ${MAX_LINES}), smoke test: ${SMOKE_OUTCOME}."
+            exit 1
+          fi
+
+          echo "✅ All guardrails passed."
