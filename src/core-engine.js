@@ -8,6 +8,7 @@
  * This is a mock: no real network, database or crypto is used.
  */
 'use strict';
+// DEMO ONLY: unauthorized edit to trigger the CI core-layer guardrail (PR should be blocked).
 
 const crypto = require('crypto');
 
