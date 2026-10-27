@@ -40,6 +40,8 @@ jobs:
 
           CORE_FILE="src/core-engine.js"
           MAX_LINES=80
+          AUDIT_REPORT="qa-evidence/PR_AUDIT_REPORT.md"
+          AUDIT_SHOT="qa-evidence/latest-ui-proof.png"
 
           git fetch --no-tags origin main
           RANGE="origin/main...HEAD"
@@ -57,10 +59,15 @@ jobs:
             [ -z "${file:-}" ] && continue
             [ "$add" = "-" ] && add=0
             [ "$del" = "-" ] && del=0
-            ADDED=$((ADDED + add))
-            REMOVED=$((REMOVED + del))
             FILE_COUNT=$((FILE_COUNT + 1))
             marker=""
+            # Generated audit evidence does not count toward the line limit.
+            if [[ "$file" == qa-evidence/* ]]; then
+              marker=" 🧪 _evidence, not counted_"
+            else
+              ADDED=$((ADDED + add))
+              REMOVED=$((REMOVED + del))
+            fi
             if [ "$file" = "$CORE_FILE" ]; then
               CORE_TOUCHED=true
               marker=" ⛔ **RESTRICTED**"
@@ -92,6 +99,28 @@ jobs:
             REASONS="${REASONS}- ${TOTAL} lines changed, over the ${MAX_LINES}-line limit. Split this PR."$'\n'
           else
             SIZE_STATUS="🟢 **WITHIN LIMIT**: ${TOTAL} of ${MAX_LINES} lines."
+          fi
+
+          # Pre-PR Audit evidence: both files must be updated in this PR.
+          CHANGED_FILES="$(git diff --name-only "$RANGE")"
+          REPORT_UPDATED=false
+          SHOT_UPDATED=false
+          grep -qx "$AUDIT_REPORT" <<< "$CHANGED_FILES" && [ -f "$AUDIT_REPORT" ] && REPORT_UPDATED=true
+          grep -qx "$AUDIT_SHOT" <<< "$CHANGED_FILES" && [ -f "$AUDIT_SHOT" ] && SHOT_UPDATED=true
+
+          if [ "$REPORT_UPDATED" = true ] && [ "$SHOT_UPDATED" = true ]; then
+            AUDIT_STATUS="🟢 **PRESENT**: audit report and UI screenshot were updated in this PR."
+          else
+            FAIL=true
+            AUDIT_STATUS="🔴 **MISSING**: run \`node scripts/run-pre-pr-audit.js\` and commit the files in \`qa-evidence/\`."
+            [ "$REPORT_UPDATED" = true ] || REASONS="${REASONS}- \`${AUDIT_REPORT}\` was not updated. The Pre-PR Audit was not run."$'\n'
+            [ "$SHOT_UPDATED" = true ] || REASONS="${REASONS}- \`${AUDIT_SHOT}\` was not updated. No fresh UI screenshot proof."$'\n'
+          fi
+
+          if [ "$REPORT_UPDATED" = true ] && grep -q "Manual check passed" "$AUDIT_REPORT"; then
+            MANUAL_STATUS="🟢 Confirmed by the developer (see report section 5)."
+          else
+            MANUAL_STATUS="🟡 Not recorded in the audit report."
           fi
 
           if [ "$SMOKE_OUTCOME" = "success" ]; then
@@ -130,7 +159,18 @@ jobs:
             echo
             echo "**Smoke test:** ${SMOKE_STATUS}"
             echo
-            echo "## d) Final verdict for Lead Architect"
+            echo "## d) Pre-PR Audit evidence"
+            echo
+            echo "| Evidence | Updated in this PR |"
+            echo "|---|---|"
+            echo "| \`${AUDIT_REPORT}\` | $([ "$REPORT_UPDATED" = true ] && echo '✅ yes' || echo '❌ no') |"
+            echo "| \`${AUDIT_SHOT}\` | $([ "$SHOT_UPDATED" = true ] && echo '✅ yes' || echo '❌ no') |"
+            echo
+            echo "${AUDIT_STATUS}"
+            echo
+            echo "**Manual verification:** ${MANUAL_STATUS}"
+            echo
+            echo "## e) Final verdict for Lead Architect"
             echo
             if [ "$FAIL" = true ]; then
               echo "> ### ❌ BLOCKED: do not merge"
@@ -141,14 +181,14 @@ jobs:
             else
               echo "> ### ✅ APPROVED FOR REVIEW"
               echo ">"
-              echo "> Core layer untouched, blast radius within limits, smoke test passed. Safe to review and merge."
+              echo "> Core layer untouched, blast radius within limits, smoke test passed, Pre-PR Audit evidence present. Safe to review and merge."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
           echo "Files: ${FILE_COUNT} | +${ADDED} -${REMOVED} = ${TOTAL} | core touched: ${CORE_TOUCHED} | smoke: ${SMOKE_OUTCOME}"
 
           if [ "$FAIL" = true ]; then
-            echo "::error title=Worktree CI Gate::PR blocked. Core touched: ${CORE_TOUCHED}, lines changed: ${TOTAL} (limit ${MAX_LINES}), smoke test: ${SMOKE_OUTCOME}."
+            echo "::error title=Worktree CI Gate::PR blocked. Core touched: ${CORE_TOUCHED}, lines changed: ${TOTAL} (limit ${MAX_LINES}), smoke test: ${SMOKE_OUTCOME}, audit report updated: ${REPORT_UPDATED}, screenshot updated: ${SHOT_UPDATED}."
             exit 1
           fi
 

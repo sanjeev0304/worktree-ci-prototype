@@ -33,6 +33,19 @@ This enterprise invoicing application has **two layers** with strict ownership.
 - Depends on `core-engine.js` through its public functions only. It must never
   reach into core internals.
 
+## Web server: `src/server.js`
+
+- Zero-dependency Node.js HTTP server on http://localhost:3456 (`node src/server.js`).
+- `GET /` serves the Enterprise Invoice Dashboard web UI.
+- `POST /api/calculate-invoice` takes `{ customerType: "VIP" | "STANDARD", amount }`
+  and returns the itemized invoice, using both layers above.
+- Part of the UI layer: Person B and C may fix bugs here.
+
+## Pre-PR audit: `scripts/run-pre-pr-audit.js`
+
+- Starts the server if needed, times real API calls, captures a UI screenshot and
+  writes `qa-evidence/PR_AUDIT_REPORT.md`. See Guardrail 4 in SAFETY_GUARDRAILS.md.
+
 ## Tests
 
 - `tests/verify-app.js`: zero-dependency Node.js smoke test that loads both modules

@@ -82,5 +82,14 @@ check('invoice-dashboard: end-to-end invoice generation', () => {
   core.disconnectDatabase();
 });
 
+check('server.js loads and builds an API invoice', () => {
+  const server = require(path.join(__dirname, '..', 'src', 'server.js'));
+  assert.strictEqual(typeof server.createServer, 'function');
+  const out = server.buildInvoice({ customerType: 'VIP', amount: 1000 });
+  assert.ok(Number.isFinite(out.invoice.total), 'total should be a finite number');
+  assert.throws(() => server.buildInvoice({ customerType: 'GOLD', amount: 1000 }));
+  core.disconnectDatabase();
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

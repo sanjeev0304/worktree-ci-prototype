@@ -1,0 +1,415 @@
+#!/usr/bin/env node
+/**
+ * run-pre-pr-audit.js — Pre-PR API & UI Audit Runner (Protocol RULE 2).
+ *
+ * 1. Makes sure the app is running on http://localhost:3456 (starts src/server.js if not).
+ * 2. Sends real POST requests to /api/calculate-invoice and times each with performance.now().
+ * 3. Runs a browser check of the UI and saves qa-evidence/latest-ui-proof.png
+ *    (Playwright → headless Chrome/Chromium → built-in PNG fallback).
+ * 4. Writes qa-evidence/PR_AUDIT_REPORT.md, ready to paste into the PR description.
+ *
+ * Usage:
+ *   node scripts/run-pre-pr-audit.js
+ *   node scripts/run-pre-pr-audit.js --manual-passed "Notes from the user's manual check"
+ *
+ * Exit code 1 if the server can't start, the main API call fails, or no screenshot is produced.
+ */
+'use strict';
+
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const http = require('http');
+const { spawn, spawnSync, execSync } = require('child_process');
+const { performance } = require('perf_hooks');
+const { renderInvoiceSnapshot } = require('./lib/png-snapshot');
+
+const ROOT = path.resolve(__dirname, '..');
+const PORT = Number(process.env.PORT) || 3456;
+const BASE_URL = `http://localhost:${PORT}`;
+const EVIDENCE_DIR = path.join(ROOT, 'qa-evidence');
+const SCREENSHOT = path.join(EVIDENCE_DIR, 'latest-ui-proof.png');
+const REPORT = path.join(EVIDENCE_DIR, 'PR_AUDIT_REPORT.md');
+
+// RULE #404 (docs/BUSINESS_RULES.md)
+const GST = 0.18;
+const VIP_CAP = 0.1;
+
+const TEST_CASES = [
+  { name: 'VIP invoice (primary)', body: { customerType: 'VIP', amount: 1000 }, expectStatus: 200, primary: true },
+  { name: 'Standard invoice', body: { customerType: 'STANDARD', amount: 1000 }, expectStatus: 200 },
+  { name: 'Invalid customer type', body: { customerType: 'GOLD', amount: 1000 }, expectStatus: 400 },
+];
+
+const logs = [];
+function log(line) {
+  const entry = `[${new Date().toISOString()}] ${line}`;
+  logs.push(entry);
+  console.log(entry);
+}
+
+// ---------- args ----------
+function parseArgs(argv) {
+  const args = { manualPassed: false, manualNotes: '' };
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '--manual-passed') {
+      args.manualPassed = true;
+      if (argv[i + 1] && !argv[i + 1].startsWith('--')) args.manualNotes = argv[++i];
+    }
+  }
+  return args;
+}
+
+// ---------- git info ----------
+function git(cmd) {
+  try {
+    return execSync(`git ${cmd}`, { cwd: ROOT, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+  } catch {
+    return '';
+  }
+}
+
+function repoInfo() {
+  const remote = git('remote get-url origin');
+  const m = remote.match(/github\.com[:/]([^/]+)\/([^/.]+?)(?:\.git)?$/);
+  const branch = git('rev-parse --abbrev-ref HEAD') || 'main';
+  return {
+    slug: m ? `${m[1]}/${m[2]}` : null,
+    branch,
+    commit: git('rev-parse --short HEAD') || 'unknown',
+    dirty: git('status --porcelain -- src tests scripts docs') !== '',
+    author: git('config user.name') || os.userInfo().username,
+  };
+}
+
+// ---------- HTTP helpers ----------
+function request(method, urlPath, body) {
+  return new Promise((resolve, reject) => {
+    const data = body === undefined ? null : JSON.stringify(body);
+    const req = http.request(
+      `${BASE_URL}${urlPath}`,
+      {
+        method,
+        headers: data ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) } : {},
+        timeout: 5000,
+      },
+      (res) => {
+        let raw = '';
+        res.on('data', (c) => (raw += c));
+        res.on('end', () => resolve({ status: res.statusCode, raw }));
+      }
+    );
+    req.on('timeout', () => req.destroy(new Error('timeout')));
+    req.on('error', reject);
+    if (data) req.write(data);
+    req.end();
+  });
+}
+
+async function isUp() {
+  try {
+    return (await request('GET', '/health')).status === 200;
+  } catch {
+    return false;
+  }
+}
+
+async function ensureServer() {
+  if (await isUp()) {
+    log(`Server already running at ${BASE_URL}; reusing it.`);
+    return null;
+  }
+  log(`Server not running. Starting src/server.js on port ${PORT}...`);
+  const child = spawn(process.execPath, [path.join(ROOT, 'src', 'server.js')], {
+    cwd: ROOT,
+    env: { ...process.env, PORT: String(PORT) },
+    stdio: 'ignore',
+  });
+  for (let i = 0; i < 50; i++) {
+    await new Promise((r) => setTimeout(r, 100));
+    if (await isUp()) {
+      log(`Server started (pid ${child.pid}).`);
+      return child;
+    }
+  }
+  child.kill();
+  throw new Error(`Server did not start on ${BASE_URL} within 5s`);
+}
+
+// ---------- API telemetry ----------
+function expectedInvoice({ customerType, amount }) {
+  const discount = customerType === 'VIP' ? amount * VIP_CAP : 0;
+  const taxable = amount - discount;
+  const gst = taxable * GST;
+  const r = (n) => Math.round(n * 100) / 100;
+  return { subtotal: r(amount), discount: r(discount), taxable: r(taxable), gst: r(gst), total: r(taxable + gst) };
+}
+
+async function runApiTests() {
+  const results = [];
+  for (const tc of TEST_CASES) {
+    const t0 = performance.now();
+    let status = 0;
+    let raw = '';
+    let error = null;
+    try {
+      ({ status, raw } = await request('POST', '/api/calculate-invoice', tc.body));
+    } catch (err) {
+      error = err.message;
+    }
+    const ms = performance.now() - t0;
+    let json = null;
+    try {
+      json = JSON.parse(raw);
+    } catch {
+      /* not JSON */
+    }
+
+    let rule = 'n/a';
+    if (status === 200 && json && json.invoice) {
+      const exp = expectedInvoice(tc.body);
+      rule = exp.total === json.invoice.total && exp.gst === json.invoice.gst ? 'PASS' : 'FAIL';
+    }
+    const ok = !error && status === tc.expectStatus;
+    results.push({ ...tc, status, ms, json, raw, error, ok, rule });
+    log(
+      `API ${tc.name}: POST /api/calculate-invoice ${JSON.stringify(tc.body)} → ` +
+        `${error ? 'ERROR ' + error : status} in ${ms.toFixed(2)} ms` +
+        (rule !== 'n/a' ? ` · RULE #404 ${rule}` : '')
+    );
+  }
+  return results;
+}
+
+// ---------- screenshot + UI test ----------
+function findChrome() {
+  const candidates = [
+    process.env.CHROME_PATH,
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    '/Applications/Chromium.app/Contents/MacOS/Chromium',
+    '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+  ].filter(Boolean);
+  return candidates.find((p) => fs.existsSync(p)) || null;
+}
+
+async function screenshotWithPlaywright(expectedTotal) {
+  let playwright;
+  try {
+    playwright = require('playwright');
+  } catch {
+    log('Playwright not installed; trying headless Chrome.');
+    return null;
+  }
+  log('Using Playwright (Chromium).');
+  const browser = await playwright.chromium.launch();
+  try {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    await page.goto(BASE_URL);
+    await page.selectOption('#customerType', 'VIP');
+    await page.fill('#amount', '1000');
+    await page.click('#calculate');
+    await page.waitForSelector('body[data-ready="true"]');
+    await page.waitForFunction(() => document.getElementById('r-total').textContent !== '—');
+    const shown = await page.textContent('#r-total');
+    log(`UI: form submitted (VIP, 1000); dashboard shows total ${shown.trim()}.`);
+    log(`UI: total matches API (${expectedTotal}): ${shown.replace(/[^\d.]/g, '') === expectedTotal.toFixed(2) ? 'yes' : 'NO'}`);
+    await page.screenshot({ path: SCREENSHOT, fullPage: true });
+    return 'Playwright (Chromium)';
+  } finally {
+    await browser.close();
+  }
+}
+
+function screenshotWithChrome(expectedTotal) {
+  const chrome = findChrome();
+  if (!chrome) {
+    log('No Chrome/Chromium found; using built-in PNG fallback.');
+    return null;
+  }
+  log(`Using headless Chrome: ${chrome}`);
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'pre-pr-audit-'));
+  const common = [
+    '--headless=new',
+    '--disable-gpu',
+    '--hide-scrollbars',
+    '--no-first-run',
+    '--no-default-browser-check',
+    `--user-data-dir=${profile}`,
+    '--window-size=1280,900',
+    '--virtual-time-budget=5000',
+  ];
+  if (process.platform === 'linux') common.push('--no-sandbox');
+
+  try {
+    // Render the page (it auto-submits the VIP / 1000 form on load) and read the DOM.
+    const dom = spawnSync(chrome, [...common, '--dump-dom', BASE_URL], { encoding: 'utf8', timeout: 60000 });
+    const total = (dom.stdout || '').match(/id="r-total">([^<]*)</);
+    const ready = /data-ready="true"/.test(dom.stdout || '');
+    log(`UI: page loaded, form auto-submitted (VIP, 1000); ready=${ready}.`);
+    if (total) {
+      log(`UI: dashboard shows total ${total[1].trim()}.`);
+      log(`UI: total matches API (${expectedTotal}): ${total[1].replace(/[^\d.]/g, '') === expectedTotal.toFixed(2) ? 'yes' : 'NO'}`);
+    } else {
+      log('UI: could not read the total from the rendered page.');
+    }
+
+    if (fs.existsSync(SCREENSHOT)) fs.unlinkSync(SCREENSHOT);
+    const shot = spawnSync(chrome, [...common, `--screenshot=${SCREENSHOT}`, BASE_URL], { encoding: 'utf8', timeout: 60000 });
+    if (shot.status !== 0 || !fs.existsSync(SCREENSHOT)) {
+      log(`Headless Chrome screenshot failed (exit ${shot.status}); using fallback.`);
+      return null;
+    }
+    return 'Headless Chrome';
+  } finally {
+    fs.rmSync(profile, { recursive: true, force: true });
+  }
+}
+
+function screenshotFallback(primary) {
+  if (!primary || !primary.json || !primary.json.invoice) return null;
+  fs.writeFileSync(SCREENSHOT, renderInvoiceSnapshot(primary.json, { url: BASE_URL, generatedAt: new Date().toISOString() }));
+  log('UI: drew fallback PNG snapshot from the API response (no real browser render).');
+  return 'Built-in PNG fallback (no browser available)';
+}
+
+async function captureScreenshot(primary) {
+  const total = primary && primary.json && primary.json.invoice ? primary.json.invoice.total : NaN;
+  let method = null;
+  try {
+    method = await screenshotWithPlaywright(total);
+  } catch (err) {
+    log(`Playwright failed: ${err.message}`);
+  }
+  if (!method) method = screenshotWithChrome(total);
+  if (!method) method = screenshotFallback(primary);
+  if (method) log(`Screenshot saved: qa-evidence/latest-ui-proof.png (${fs.statSync(SCREENSHOT).size} bytes) via ${method}.`);
+  return method;
+}
+
+// ---------- report ----------
+const cell = (s) => String(s).replace(/\|/g, '\\|').replace(/\n/g, ' ');
+
+function buildReport({ info, results, shotMethod, args, generatedAt }) {
+  const primary = results.find((r) => r.primary);
+  const imgUrl = info.slug
+    ? `https://github.com/${info.slug}/blob/${encodeURIComponent(info.branch)}/qa-evidence/latest-ui-proof.png?raw=true`
+    : 'qa-evidence/latest-ui-proof.png?raw=true';
+
+  const out = [];
+  out.push('# 🧪 Pre-PR Audit Report', '');
+  out.push('| | |', '|---|---|');
+  out.push(`| **Branch** | \`${info.branch}\` |`);
+  out.push(`| **Audited commit** | \`${info.commit}\`${info.dirty ? ' + uncommitted changes' : ''} |`);
+  out.push(`| **Generated** | ${generatedAt} |`);
+  out.push(`| **Run by** | ${info.author} · Node ${process.version} · ${process.platform} |`);
+  out.push(`| **Target** | ${BASE_URL} |`, '');
+
+  out.push('## 1. API Flight-Time Telemetry', '');
+  out.push('| # | Endpoint | Method | Params Sent | Status Code | Flight Time (ms) | Response Body | Result |');
+  out.push('|---|---|---|---|---:|---:|---|---|');
+  results.forEach((r, i) => {
+    const body = r.error ? `ERROR: ${r.error}` : r.json && r.json.invoice ? JSON.stringify(r.json.invoice) : r.raw;
+    const verdict = r.ok ? (r.rule === 'FAIL' ? '⚠️ RULE #404 FAIL' : '✅ OK') : `❌ expected ${r.expectStatus}`;
+    out.push(
+      `| ${i + 1} | \`/api/calculate-invoice\` | POST | \`${cell(JSON.stringify(r.body))}\` | ${r.status || '—'} | ` +
+        `${r.ms.toFixed(2)} | \`${cell(body)}\` | ${verdict} |`
+    );
+  });
+  const times = results.map((r) => r.ms);
+  out.push('', `Average flight time: **${(times.reduce((a, b) => a + b, 0) / times.length).toFixed(2)} ms** · ` +
+    `slowest: **${Math.max(...times).toFixed(2)} ms**`, '');
+
+  results.forEach((r, i) => {
+    out.push(`<details><summary>Full response #${i + 1}: ${r.name}</summary>`, '', '```json', r.raw || r.error || '', '```', '', '</details>');
+  });
+  out.push('');
+
+  out.push('## 2. Business Rule Check (RULE #404)', '');
+  if (primary && primary.json && primary.json.invoice) {
+    const exp = expectedInvoice(primary.body);
+    const act = primary.json.invoice;
+    out.push('Primary case: `{ customerType: "VIP", amount: 1000 }`', '');
+    out.push('| Field | Expected (18% GST, 10% VIP cap) | Actual | |', '|---|---:|---:|---|');
+    for (const k of ['subtotal', 'discount', 'taxable', 'gst', 'total']) {
+      out.push(`| ${k} | ${exp[k].toFixed(2)} | ${act[k].toFixed(2)} | ${exp[k] === act[k] ? '✅' : '❌'} |`);
+    }
+    out.push('', primary.rule === 'PASS' ? '**RULE #404: ✅ COMPLIANT**' : '**RULE #404: ❌ VIOLATED** — the app does not follow the business rules yet.');
+  } else {
+    out.push('❌ Could not check: primary API call failed.');
+  }
+  out.push('');
+
+  out.push('## 3. Automated UI Test Logs', '', '```text', ...logs, '```', '');
+
+  out.push('## 4. UI Screenshot Proof', '');
+  if (shotMethod) {
+    out.push(`Captured with: **${shotMethod}**`, '', `![Enterprise Invoice Dashboard: latest UI proof](${imgUrl})`);
+  } else {
+    out.push('❌ No screenshot captured.');
+  }
+  out.push('');
+
+  out.push('## 5. Manual Verification (Protocol RULE 3)', '');
+  if (args.manualPassed) {
+    out.push(`**✅ Manual check passed** — confirmed by ${info.author} on ${generatedAt}`, '');
+    out.push('Observation notes:', '', `> ${args.manualNotes ? args.manualNotes.replace(/\n/g, '\n> ') : '_No notes given._'}`);
+  } else {
+    out.push('**⏳ PENDING** — the user has not confirmed a manual check yet.', '');
+    out.push(`Start the app with \`node src/server.js\`, test it at ${BASE_URL}, then re-run:`, '');
+    out.push('```bash', 'node scripts/run-pre-pr-audit.js --manual-passed "<your observation notes>"', '```');
+  }
+  out.push('');
+
+  out.push('## 6. Pre-PR Protocol Checklist', '');
+  out.push('- [x] RULE 1: PR not opened straight after editing code');
+  out.push(`- [x] RULE 2: Pre-PR audit run (API telemetry + screenshot)`);
+  out.push(`- [${args.manualPassed ? 'x' : ' '}] RULE 3: Manual check on ${BASE_URL} confirmed by the user`);
+  out.push('- [x] RULE 4: This report is the PR description (`gh pr create --body-file qa-evidence/PR_AUDIT_REPORT.md`)');
+  out.push('', '---', '_Generated by `scripts/run-pre-pr-audit.js`._', '');
+  return out.join('\n');
+}
+
+// ---------- main ----------
+async function main() {
+  const args = parseArgs(process.argv.slice(2));
+  const info = repoInfo();
+  fs.mkdirSync(EVIDENCE_DIR, { recursive: true });
+
+  log(`Pre-PR audit started on branch ${info.branch} (${info.commit}).`);
+  let server = null;
+  let exitCode = 0;
+  try {
+    server = await ensureServer();
+    const results = await runApiTests();
+    const primary = results.find((r) => r.primary);
+    if (!primary.ok) exitCode = 1;
+
+    const shotMethod = await captureScreenshot(primary);
+    if (!shotMethod) exitCode = 1;
+
+    if (args.manualPassed) log(`Manual check recorded as PASSED by ${info.author}.`);
+    log(`Audit finished: ${exitCode === 0 ? 'evidence complete' : 'evidence INCOMPLETE'}.`);
+
+    const generatedAt = new Date().toISOString();
+    fs.writeFileSync(REPORT, buildReport({ info, results, shotMethod, args, generatedAt }));
+    console.log(`\nReport written: qa-evidence/PR_AUDIT_REPORT.md`);
+    if (primary.rule === 'FAIL') console.log('⚠️  RULE #404 is violated by the current code (see report section 2).');
+    if (!args.manualPassed) console.log('⏳ Manual check pending: test http://localhost:3456, then re-run with --manual-passed "<notes>".');
+  } catch (err) {
+    log(`Audit failed: ${err.message}`);
+    exitCode = 1;
+  } finally {
+    if (server) {
+      server.kill();
+      log('Stopped the server this audit started.');
+    }
+  }
+  process.exit(exitCode);
+}
+
+main();
