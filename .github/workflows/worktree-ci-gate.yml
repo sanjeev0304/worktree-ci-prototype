@@ -118,9 +118,11 @@ jobs:
           fi
 
           if [ "$REPORT_UPDATED" = true ] && grep -q "Manual check passed" "$AUDIT_REPORT"; then
-            MANUAL_STATUS="🟢 Confirmed by the developer (see report section 5)."
+            MANUAL_STATUS="🟢 **CONFIRMED**: \"Manual check passed\" is recorded (see report section 5)."
           else
-            MANUAL_STATUS="🟡 Not recorded in the audit report."
+            FAIL=true
+            MANUAL_STATUS="🔴 **MISSING**: no \"Manual check passed\" in the audit report. Test on http://localhost:3456, then run \`node scripts/run-pre-pr-audit.js --manual-passed \"<notes>\"\`."
+            REASONS="${REASONS}- Manual verification (Protocol RULE 3) not recorded: \"Manual check passed\" is missing from \`${AUDIT_REPORT}\`."$'\n'
           fi
 
           if [ "$SMOKE_OUTCOME" = "success" ]; then
@@ -181,7 +183,7 @@ jobs:
             else
               echo "> ### ✅ APPROVED FOR REVIEW"
               echo ">"
-              echo "> Core layer untouched, blast radius within limits, smoke test passed, Pre-PR Audit evidence present. Safe to review and merge."
+              echo "> Core layer untouched, blast radius within limits, smoke test passed, Pre-PR Audit evidence present, manual check confirmed. Safe to review and merge."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 

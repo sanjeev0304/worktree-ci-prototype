@@ -40,6 +40,8 @@ Every pull request must go through these four steps, in order.
 - **CI:** a pull request that does not update both `qa-evidence/PR_AUDIT_REPORT.md`
   and `qa-evidence/latest-ui-proof.png` fails. Opening a PR without running the
   Pre-PR Audit is blocked automatically.
+- **CI:** a pull request whose audit report does not contain "Manual check passed"
+  fails. Skipping the manual check (RULE 3) is blocked automatically.
 
 ## For Claude in any worktree
 
