@@ -1,0 +1,46 @@
+#!/bin/sh
+# pre-commit: Definition of Done gate (see CLAUDE.md and docs/SAFETY_GUARDRAILS.md).
+#
+# Refuses a commit that changes anything under src/ unless the audit report staged in
+# the SAME commit contains "✅ Manual check passed". Commits that don't touch src/
+# (docs, scripts, CI) are not affected.
+#
+# Turn on with: node scripts/install-hooks.js
+
+REPORT="qa-evidence/PR_AUDIT_REPORT.md"
+MARKER="✅ Manual check passed"
+
+SRC_CHANGES=$(git diff --cached --name-only -- src/)
+[ -z "$SRC_CHANGES" ] && exit 0
+
+fail() {
+  echo ""
+  echo "⛔ COMMIT BLOCKED: Definition of Done not met"
+  echo ""
+  echo "This commit changes application code:"
+  echo "$SRC_CHANGES" | sed 's/^/    /'
+  echo ""
+  echo "Problem: $1"
+  echo ""
+  echo "Before committing code you must:"
+  echo "  1. Start the app:          node src/server.js   (http://localhost:3456)"
+  echo "  2. Run the audit:          node scripts/run-pre-pr-audit.js"
+  echo "  3. Test it in a browser, then record the manual check:"
+  echo "                             node scripts/run-pre-pr-audit.js --manual-passed \"<notes>\""
+  echo "  4. Stage the evidence:     git add qa-evidence/"
+  echo "  5. Commit again."
+  echo ""
+  exit 1
+}
+
+# The report must be part of this commit, so the evidence matches the code.
+if ! git diff --cached --name-only -- "$REPORT" | grep -qx "$REPORT"; then
+  fail "$REPORT is not staged in this commit (no fresh audit for this change)."
+fi
+
+# Check the staged copy (what will actually be committed), not the working file.
+if ! git show ":$REPORT" 2>/dev/null | grep -qF "$MARKER"; then
+  fail "the staged $REPORT does not contain \"$MARKER\" (manual check not recorded)."
+fi
+
+exit 0

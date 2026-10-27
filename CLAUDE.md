@@ -1,5 +1,30 @@
 # CLAUDE.md — Master Context Router
 
+## ⛔ DEFINITION OF DONE FOR ANY CODE EDIT
+
+**CRITICAL WORKFLOW RULE: Whenever a user asks you to fix a bug or change any code (even if they do NOT mention testing or PRs in their prompt), you are FORBIDDEN from ending your turn right after editing the file. In the exact same turn, immediately after editing the code, you MUST:**
+
+1. **Run `node scripts/run-pre-pr-audit.js` to test the API, log flight times, and capture the screenshot.**
+2. **Ensure the local server is running on `http://localhost:3456`.**
+3. **Show the user the API flight-time results in the chat and ask: 'I have tested the API and started the local server on http://localhost:3456. Please check it manually and reply APPROVED before I commit or create a PR.'**
+4. **Do NOT run `git commit` until the user replies confirming their manual check!**
+
+How to do it:
+
+- Start `node src/server.js` **in the background first**, then run the audit. The audit
+  reuses a running server and leaves it up; a server the audit starts itself is
+  stopped when the audit ends.
+- Show the API Flight-Time Telemetry table and the RULE #404 result from
+  `qa-evidence/PR_AUDIT_REPORT.md` in the chat.
+- When the user replies APPROVED (or "Manual check passed"), record it with
+  `node scripts/run-pre-pr-audit.js --manual-passed "<user's notes>"`, then commit the
+  code together with everything in `qa-evidence/`.
+- A Git pre-commit hook (`.githooks/pre-commit`) enforces this: a commit that changes
+  `src/` is refused unless the staged audit report contains "✅ Manual check passed".
+  Run `node scripts/install-hooks.js` once per clone to turn it on.
+
+---
+
 This file is loaded automatically by Claude in every session and every Git worktree
 created from this repository. It pulls in the full application context through the
 `@` imports below, so each team member's isolated worktree starts with the same
@@ -44,7 +69,7 @@ that lacks fresh evidence in `qa-evidence/`.
 3. **RULE 3: Start the server and PAUSE for a manual check.**
    - Start `node src/server.js` (in the background) so the app runs on http://localhost:3456.
    - Ask the user to test it in their browser, then **stop and wait**. Do not continue
-     until the user replies with "Manual check passed".
+     until the user replies APPROVED (or "Manual check passed").
    - Ask for their observation notes, then record them:
      `node scripts/run-pre-pr-audit.js --manual-passed "<user's notes>"`
    - Stop the server afterwards.
@@ -59,6 +84,7 @@ that lacks fresh evidence in `qa-evidence/`.
 ## Commands
 
 ```bash
+node scripts/install-hooks.js               # once per clone: turn on the pre-commit hook
 node tests/verify-app.js                    # smoke test: modules load and run without crashing
 node src/server.js                          # run the app on http://localhost:3456
 node scripts/run-pre-pr-audit.js            # RULE 2: API telemetry + UI screenshot + report
