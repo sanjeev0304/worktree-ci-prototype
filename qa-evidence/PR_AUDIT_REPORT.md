@@ -2,9 +2,9 @@
 
 | | |
 |---|---|
-| **Branch** | `main` |
-| **Audited commit** | `8993aa0` + uncommitted changes |
-| **Generated** | 2026-10-27T17:56:08.258Z |
+| **Branch** | `fix/verified-invoice-audit` |
+| **Audited commit** | `f5e4914` + uncommitted changes |
+| **Generated** | 2026-10-27T18:07:46.067Z |
 | **Run by** | sanjeev0304 · Node v26.0.0 · darwin |
 | **Target** | http://localhost:3456 |
 
@@ -12,11 +12,11 @@
 
 | # | Endpoint | Method | Params Sent | Status Code | Flight Time (ms) | Response Body | Result |
 |---|---|---|---|---:|---:|---|---|
-| 1 | `/api/calculate-invoice` | POST | `{"customerType":"VIP","amount":1000}` | 200 | 1.12 | `{"subtotal":1000,"discount":500,"taxable":500,"gst":25,"total":525}` | ⚠️ RULE #404 FAIL |
-| 2 | `/api/calculate-invoice` | POST | `{"customerType":"STANDARD","amount":1000}` | 200 | 0.43 | `{"subtotal":1000,"discount":0,"taxable":1000,"gst":50,"total":1050}` | ⚠️ RULE #404 FAIL |
-| 3 | `/api/calculate-invoice` | POST | `{"customerType":"GOLD","amount":1000}` | 400 | 0.46 | `{   "error": "customerType must be \"VIP\" or \"STANDARD\"" }` | ✅ OK |
+| 1 | `/api/calculate-invoice` | POST | `{"customerType":"VIP","amount":1000}` | 200 | 0.63 | `{"subtotal":1000,"discount":100,"taxable":900,"gst":162,"total":1062}` | ✅ OK |
+| 2 | `/api/calculate-invoice` | POST | `{"customerType":"STANDARD","amount":1000}` | 200 | 0.34 | `{"subtotal":1000,"discount":0,"taxable":1000,"gst":180,"total":1180}` | ✅ OK |
+| 3 | `/api/calculate-invoice` | POST | `{"customerType":"GOLD","amount":1000}` | 400 | 0.45 | `{   "error": "customerType must be \"VIP\" or \"STANDARD\"" }` | ✅ OK |
 
-Average flight time: **0.67 ms** · slowest: **1.12 ms**
+Average flight time: **0.48 ms** · slowest: **0.63 ms**
 
 <details><summary>Full response #1: VIP invoice (primary)</summary>
 
@@ -36,17 +36,17 @@ Average flight time: **0.67 ms** · slowest: **1.12 ms**
     }
   ],
   "rates": {
-    "gstRate": 0.05,
-    "vipDiscount": 0.5
+    "gstRate": 0.18,
+    "vipDiscount": 0.1
   },
   "invoice": {
     "subtotal": 1000,
-    "discount": 500,
-    "taxable": 500,
-    "gst": 25,
-    "total": 525
+    "discount": 100,
+    "taxable": 900,
+    "gst": 162,
+    "total": 1062
   },
-  "generatedAt": "2026-10-27T17:56:07.478Z"
+  "generatedAt": "2026-10-27T18:07:44.808Z"
 }
 ```
 
@@ -69,17 +69,17 @@ Average flight time: **0.67 ms** · slowest: **1.12 ms**
     }
   ],
   "rates": {
-    "gstRate": 0.05,
+    "gstRate": 0.18,
     "vipDiscount": 0
   },
   "invoice": {
     "subtotal": 1000,
     "discount": 0,
     "taxable": 1000,
-    "gst": 50,
-    "total": 1050
+    "gst": 180,
+    "total": 1180
   },
-  "generatedAt": "2026-10-27T17:56:07.479Z"
+  "generatedAt": "2026-10-27T18:07:44.809Z"
 }
 ```
 
@@ -101,52 +101,50 @@ Primary case: `{ customerType: "VIP", amount: 1000 }`
 | Field | Expected (18% GST, 10% VIP cap) | Actual | |
 |---|---:|---:|---|
 | subtotal | 1000.00 | 1000.00 | ✅ |
-| discount | 100.00 | 500.00 | ❌ |
-| taxable | 900.00 | 500.00 | ❌ |
-| gst | 162.00 | 25.00 | ❌ |
-| total | 1062.00 | 525.00 | ❌ |
+| discount | 100.00 | 100.00 | ✅ |
+| taxable | 900.00 | 900.00 | ✅ |
+| gst | 162.00 | 162.00 | ✅ |
+| total | 1062.00 | 1062.00 | ✅ |
 
-**RULE #404: ❌ VIOLATED** — the app does not follow the business rules yet.
+**RULE #404: ✅ COMPLIANT**
 
 ## 3. Automated UI Test Logs
 
 ```text
-[2026-10-27T17:56:07.364Z] Pre-PR audit started on branch main (8993aa0).
-[2026-10-27T17:56:07.372Z] Server not running. Starting src/server.js on port 3456...
-[2026-10-27T17:56:07.477Z] Server started (pid 63580).
-[2026-10-27T17:56:07.478Z] API VIP invoice (primary): POST /api/calculate-invoice {"customerType":"VIP","amount":1000} → 200 in 1.12 ms · RULE #404 FAIL
-[2026-10-27T17:56:07.479Z] API Standard invoice: POST /api/calculate-invoice {"customerType":"STANDARD","amount":1000} → 200 in 0.43 ms · RULE #404 FAIL
-[2026-10-27T17:56:07.479Z] API Invalid customer type: POST /api/calculate-invoice {"customerType":"GOLD","amount":1000} → 400 in 0.46 ms
-[2026-10-27T17:56:07.480Z] Playwright not installed; trying headless Chrome.
-[2026-10-27T17:56:07.480Z] Using headless Chrome: /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
-[2026-10-27T17:56:07.845Z] UI: page loaded, form auto-submitted (VIP, 1000); ready=true.
-[2026-10-27T17:56:07.846Z] UI: dashboard shows total ₹525.00.
-[2026-10-27T17:56:07.846Z] UI: total matches API (525): yes
-[2026-10-27T17:56:08.258Z] Screenshot saved: qa-evidence/latest-ui-proof.png (52601 bytes) via Headless Chrome.
-[2026-10-27T17:56:08.258Z] Audit finished: evidence complete.
+[2026-10-27T18:07:44.798Z] Pre-PR audit started on branch fix/verified-invoice-audit (f5e4914).
+[2026-10-27T18:07:44.808Z] Server already running at http://localhost:3456; reusing it.
+[2026-10-27T18:07:44.808Z] API VIP invoice (primary): POST /api/calculate-invoice {"customerType":"VIP","amount":1000} → 200 in 0.63 ms · RULE #404 PASS
+[2026-10-27T18:07:44.809Z] API Standard invoice: POST /api/calculate-invoice {"customerType":"STANDARD","amount":1000} → 200 in 0.34 ms · RULE #404 PASS
+[2026-10-27T18:07:44.809Z] API Invalid customer type: POST /api/calculate-invoice {"customerType":"GOLD","amount":1000} → 400 in 0.45 ms
+[2026-10-27T18:07:44.809Z] Playwright not installed; trying headless Chrome.
+[2026-10-27T18:07:44.810Z] Using headless Chrome: /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+[2026-10-27T18:07:45.602Z] UI: page loaded, form auto-submitted (VIP, 1000); ready=true.
+[2026-10-27T18:07:45.602Z] UI: dashboard shows total ₹1,062.00.
+[2026-10-27T18:07:45.602Z] UI: total matches API (1062): yes
+[2026-10-27T18:07:46.067Z] Screenshot saved: qa-evidence/latest-ui-proof.png (53393 bytes) via Headless Chrome.
+[2026-10-27T18:07:46.067Z] Manual check recorded as PASSED by sanjeev0304.
+[2026-10-27T18:07:46.067Z] Audit finished: evidence complete.
 ```
 
 ## 4. UI Screenshot Proof
 
 Captured with: **Headless Chrome**
 
-![Enterprise Invoice Dashboard: latest UI proof](https://github.com/sanjeev0304/worktree-ci-prototype/blob/main/qa-evidence/latest-ui-proof.png?raw=true)
+![Enterprise Invoice Dashboard: latest UI proof](https://github.com/sanjeev0304/worktree-ci-prototype/blob/fix%2Fverified-invoice-audit/qa-evidence/latest-ui-proof.png?raw=true)
 
 ## 5. Manual Verification (Protocol RULE 3)
 
-**⏳ PENDING** — the user has not confirmed a manual check yet.
+**✅ Manual check passed** — confirmed by sanjeev0304 on 2026-10-27T18:07:46.067Z
 
-Start the app with `node src/server.js`, test it at http://localhost:3456, then re-run:
+Observation notes:
 
-```bash
-node scripts/run-pre-pr-audit.js --manual-passed "<your observation notes>"
-```
+> VIP ₹1000 shows discount ₹100 (10%), GST ₹162 (18%), total ₹1,062.00; STANDARD ₹1000 shows total ₹1,180.00.
 
 ## 6. Pre-PR Protocol Checklist
 
 - [x] RULE 1: PR not opened straight after editing code
 - [x] RULE 2: Pre-PR audit run (API telemetry + screenshot)
-- [ ] RULE 3: Manual check on http://localhost:3456 confirmed by the user
+- [x] RULE 3: Manual check on http://localhost:3456 confirmed by the user
 - [x] RULE 4: This report is the PR description (`gh pr create --body-file qa-evidence/PR_AUDIT_REPORT.md`)
 
 ---
