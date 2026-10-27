@@ -88,6 +88,9 @@ check('server.js loads and builds an API invoice', () => {
   const out = server.buildInvoice({ customerType: 'VIP', amount: 1000 });
   assert.ok(Number.isFinite(out.invoice.total), 'total should be a finite number');
   assert.throws(() => server.buildInvoice({ customerType: 'GOLD', amount: 1000 }));
+  assert.strictEqual(out.currency, 'INR', 'currency should default to INR');
+  assert.strictEqual(server.buildInvoice({ customerType: 'VIP', amount: 1000, currency: 'usd' }).currency, 'USD');
+  assert.throws(() => server.buildInvoice({ customerType: 'VIP', amount: 1000, currency: 'XYZ' }));
   core.disconnectDatabase();
 });
 

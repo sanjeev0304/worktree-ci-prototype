@@ -2,9 +2,9 @@
 
 | | |
 |---|---|
-| **Branch** | `main` |
-| **Audited commit** | `8993aa0` + uncommitted changes |
-| **Generated** | 2026-10-27T17:56:08.258Z |
+| **Branch** | `feature/currency-selector` |
+| **Audited commit** | `f5e4914` + uncommitted changes |
+| **Generated** | 2026-10-27T18:24:39.774Z |
 | **Run by** | sanjeev0304 · Node v26.0.0 · darwin |
 | **Target** | http://localhost:3456 |
 
@@ -12,11 +12,11 @@
 
 | # | Endpoint | Method | Params Sent | Status Code | Flight Time (ms) | Response Body | Result |
 |---|---|---|---|---:|---:|---|---|
-| 1 | `/api/calculate-invoice` | POST | `{"customerType":"VIP","amount":1000}` | 200 | 1.12 | `{"subtotal":1000,"discount":500,"taxable":500,"gst":25,"total":525}` | ⚠️ RULE #404 FAIL |
-| 2 | `/api/calculate-invoice` | POST | `{"customerType":"STANDARD","amount":1000}` | 200 | 0.43 | `{"subtotal":1000,"discount":0,"taxable":1000,"gst":50,"total":1050}` | ⚠️ RULE #404 FAIL |
-| 3 | `/api/calculate-invoice` | POST | `{"customerType":"GOLD","amount":1000}` | 400 | 0.46 | `{   "error": "customerType must be \"VIP\" or \"STANDARD\"" }` | ✅ OK |
+| 1 | `/api/calculate-invoice` | POST | `{"customerType":"VIP","amount":1000}` | 200 | 0.65 | `{"subtotal":1000,"discount":500,"taxable":500,"gst":25,"total":525}` | ⚠️ RULE #404 FAIL |
+| 2 | `/api/calculate-invoice` | POST | `{"customerType":"STANDARD","amount":1000}` | 200 | 0.42 | `{"subtotal":1000,"discount":0,"taxable":1000,"gst":50,"total":1050}` | ⚠️ RULE #404 FAIL |
+| 3 | `/api/calculate-invoice` | POST | `{"customerType":"GOLD","amount":1000}` | 400 | 0.38 | `{   "error": "customerType must be \"VIP\" or \"STANDARD\"" }` | ✅ OK |
 
-Average flight time: **0.67 ms** · slowest: **1.12 ms**
+Average flight time: **0.48 ms** · slowest: **0.65 ms**
 
 <details><summary>Full response #1: VIP invoice (primary)</summary>
 
@@ -35,6 +35,7 @@ Average flight time: **0.67 ms** · slowest: **1.12 ms**
       "unitPrice": 1000
     }
   ],
+  "currency": "INR",
   "rates": {
     "gstRate": 0.05,
     "vipDiscount": 0.5
@@ -46,7 +47,7 @@ Average flight time: **0.67 ms** · slowest: **1.12 ms**
     "gst": 25,
     "total": 525
   },
-  "generatedAt": "2026-10-27T17:56:07.478Z"
+  "generatedAt": "2026-10-27T18:24:38.440Z"
 }
 ```
 
@@ -68,6 +69,7 @@ Average flight time: **0.67 ms** · slowest: **1.12 ms**
       "unitPrice": 1000
     }
   ],
+  "currency": "INR",
   "rates": {
     "gstRate": 0.05,
     "vipDiscount": 0
@@ -79,7 +81,7 @@ Average flight time: **0.67 ms** · slowest: **1.12 ms**
     "gst": 50,
     "total": 1050
   },
-  "generatedAt": "2026-10-27T17:56:07.479Z"
+  "generatedAt": "2026-10-27T18:24:38.440Z"
 }
 ```
 
@@ -111,42 +113,40 @@ Primary case: `{ customerType: "VIP", amount: 1000 }`
 ## 3. Automated UI Test Logs
 
 ```text
-[2026-10-27T17:56:07.364Z] Pre-PR audit started on branch main (8993aa0).
-[2026-10-27T17:56:07.372Z] Server not running. Starting src/server.js on port 3456...
-[2026-10-27T17:56:07.477Z] Server started (pid 63580).
-[2026-10-27T17:56:07.478Z] API VIP invoice (primary): POST /api/calculate-invoice {"customerType":"VIP","amount":1000} → 200 in 1.12 ms · RULE #404 FAIL
-[2026-10-27T17:56:07.479Z] API Standard invoice: POST /api/calculate-invoice {"customerType":"STANDARD","amount":1000} → 200 in 0.43 ms · RULE #404 FAIL
-[2026-10-27T17:56:07.479Z] API Invalid customer type: POST /api/calculate-invoice {"customerType":"GOLD","amount":1000} → 400 in 0.46 ms
-[2026-10-27T17:56:07.480Z] Playwright not installed; trying headless Chrome.
-[2026-10-27T17:56:07.480Z] Using headless Chrome: /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
-[2026-10-27T17:56:07.845Z] UI: page loaded, form auto-submitted (VIP, 1000); ready=true.
-[2026-10-27T17:56:07.846Z] UI: dashboard shows total ₹525.00.
-[2026-10-27T17:56:07.846Z] UI: total matches API (525): yes
-[2026-10-27T17:56:08.258Z] Screenshot saved: qa-evidence/latest-ui-proof.png (52601 bytes) via Headless Chrome.
-[2026-10-27T17:56:08.258Z] Audit finished: evidence complete.
+[2026-10-27T18:24:38.430Z] Pre-PR audit started on branch feature/currency-selector (f5e4914).
+[2026-10-27T18:24:38.439Z] Server already running at http://localhost:3456; reusing it.
+[2026-10-27T18:24:38.440Z] API VIP invoice (primary): POST /api/calculate-invoice {"customerType":"VIP","amount":1000} → 200 in 0.65 ms · RULE #404 FAIL
+[2026-10-27T18:24:38.440Z] API Standard invoice: POST /api/calculate-invoice {"customerType":"STANDARD","amount":1000} → 200 in 0.42 ms · RULE #404 FAIL
+[2026-10-27T18:24:38.441Z] API Invalid customer type: POST /api/calculate-invoice {"customerType":"GOLD","amount":1000} → 400 in 0.38 ms
+[2026-10-27T18:24:38.441Z] Playwright not installed; trying headless Chrome.
+[2026-10-27T18:24:38.441Z] Using headless Chrome: /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+[2026-10-27T18:24:39.251Z] UI: page loaded, form auto-submitted (VIP, 1000); ready=true.
+[2026-10-27T18:24:39.251Z] UI: dashboard shows total ₹525.00.
+[2026-10-27T18:24:39.251Z] UI: total matches API (525): yes
+[2026-10-27T18:24:39.774Z] Screenshot saved: qa-evidence/latest-ui-proof.png (54201 bytes) via Headless Chrome.
+[2026-10-27T18:24:39.774Z] Manual check recorded as PASSED by sanjeev0304.
+[2026-10-27T18:24:39.774Z] Audit finished: evidence complete.
 ```
 
 ## 4. UI Screenshot Proof
 
 Captured with: **Headless Chrome**
 
-![Enterprise Invoice Dashboard: latest UI proof](https://github.com/sanjeev0304/worktree-ci-prototype/blob/main/qa-evidence/latest-ui-proof.png?raw=true)
+![Enterprise Invoice Dashboard: latest UI proof](https://github.com/sanjeev0304/worktree-ci-prototype/blob/feature%2Fcurrency-selector/qa-evidence/latest-ui-proof.png?raw=true)
 
 ## 5. Manual Verification (Protocol RULE 3)
 
-**⏳ PENDING** — the user has not confirmed a manual check yet.
+**✅ Manual check passed** — confirmed by sanjeev0304 on 2026-10-27T18:24:39.774Z
 
-Start the app with `node src/server.js`, test it at http://localhost:3456, then re-run:
+Observation notes:
 
-```bash
-node scripts/run-pre-pr-audit.js --manual-passed "<your observation notes>"
-```
+> currency dropdown switches INR/USD/EUR/GBP symbols correctly; totals unchanged.
 
 ## 6. Pre-PR Protocol Checklist
 
 - [x] RULE 1: PR not opened straight after editing code
 - [x] RULE 2: Pre-PR audit run (API telemetry + screenshot)
-- [ ] RULE 3: Manual check on http://localhost:3456 confirmed by the user
+- [x] RULE 3: Manual check on http://localhost:3456 confirmed by the user
 - [x] RULE 4: This report is the PR description (`gh pr create --body-file qa-evidence/PR_AUDIT_REPORT.md`)
 
 ---

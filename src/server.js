@@ -2,7 +2,7 @@
  * server.js — zero-dependency HTTP server for the Enterprise Invoice Dashboard.
  *
  *   GET  /                        Web UI (invoice form + result)
- *   POST /api/calculate-invoice   { customerType: "VIP" | "STANDARD", amount: number }
+ *   POST /api/calculate-invoice   { customerType: "VIP" | "STANDARD", amount: number, currency?: "INR" | "USD" | "EUR" | "GBP" }
  *   GET  /health                  { ok: true }
  *
  * Run: node src/server.js        (default port 3456, override with PORT)
@@ -22,16 +22,24 @@ const SERVICE_PASSWORD = 'finance123';
 // Demo customer used for each customer type.
 const CUSTOMER_BY_TYPE = { VIP: 'C001', STANDARD: 'C002' };
 
+// Display currencies. Amounts are shown in the chosen currency as entered (no conversion).
+const CURRENCIES = { INR: 'en-IN', USD: 'en-US', EUR: 'de-DE', GBP: 'en-GB' };
+const DEFAULT_CURRENCY = 'INR';
+
 /** Validates input and returns the itemized invoice. Throws { status, message } on bad input. */
 function buildInvoice(body) {
   const customerType = String((body && body.customerType) || '').toUpperCase();
   const amount = Number(body && body.amount);
+  const currency = String((body && body.currency) || DEFAULT_CURRENCY).toUpperCase();
 
   if (!CUSTOMER_BY_TYPE[customerType]) {
     throw { status: 400, message: 'customerType must be "VIP" or "STANDARD"' };
   }
   if (!Number.isFinite(amount) || amount <= 0) {
     throw { status: 400, message: 'amount must be a positive number' };
+  }
+  if (!CURRENCIES[currency]) {
+    throw { status: 400, message: 'currency must be one of ' + Object.keys(CURRENCIES).join(', ') };
   }
 
   core.connectDatabase();
@@ -43,6 +51,7 @@ function buildInvoice(body) {
   return {
     customer: { id: customer.id, name: customer.name, type: customerType, isVip: customer.isVip },
     items,
+    currency,
     rates: { gstRate: dashboard.GST_RATE, vipDiscount: customer.isVip ? dashboard.VIP_DISCOUNT : 0 },
     invoice,
     generatedAt: new Date().toISOString(),
@@ -120,7 +129,15 @@ function renderPage() {
           <option value="STANDARD">Standard</option>
         </select>
       </label>
-      <label>Amount (₹)
+      <label>Currency
+        <select id="currency" name="currency">
+          <option value="INR" selected>INR (₹)</option>
+          <option value="USD">USD ($)</option>
+          <option value="EUR">EUR (€)</option>
+          <option value="GBP">GBP (£)</option>
+        </select>
+      </label>
+      <label>Amount
         <input id="amount" name="amount" type="number" min="1" step="0.01" value="1000">
       </label>
       <button id="calculate" type="submit">Calculate</button>
@@ -141,28 +158,31 @@ function renderPage() {
 </main>
 <footer>Rendered at ${renderedAt}</footer>
 <script>
-  const fmt = (n) => '₹' + Number(n).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const LOCALES = ${JSON.stringify(CURRENCIES)};
+  const fmt = (n, cur) => Number(n).toLocaleString(LOCALES[cur], { style: 'currency', currency: cur });
   const $ = (id) => document.getElementById(id);
   async function calculate(event) {
     if (event) event.preventDefault();
-    const body = { customerType: $('customerType').value, amount: Number($('amount').value) };
+    const body = { customerType: $('customerType').value, amount: Number($('amount').value), currency: $('currency').value };
     const res = await fetch('/api/calculate-invoice', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
     });
     const data = await res.json();
     if (!res.ok) { $('r-customer').textContent = 'Error: ' + data.error; return; }
     const inv = data.invoice;
+    const cur = data.currency;
     $('r-customer').textContent = data.customer.name + ' (' + data.customer.type + ')';
-    $('r-subtotal').textContent = fmt(inv.subtotal);
-    $('r-discount').textContent = '−' + fmt(inv.discount) + ' (' + Math.round(data.rates.vipDiscount * 100) + '%)';
-    $('r-gst').textContent = fmt(inv.gst) + ' (' + Math.round(data.rates.gstRate * 100) + '%)';
-    $('r-total').textContent = fmt(inv.total);
+    $('r-subtotal').textContent = fmt(inv.subtotal, cur);
+    $('r-discount').textContent = '−' + fmt(inv.discount, cur) + ' (' + Math.round(data.rates.vipDiscount * 100) + '%)';
+    $('r-gst').textContent = fmt(inv.gst, cur) + ' (' + Math.round(data.rates.gstRate * 100) + '%)';
+    $('r-total').textContent = fmt(inv.total, cur);
     const ok = data.rates.gstRate === 0.18 && data.rates.vipDiscount <= 0.10;
     $('r-rule').textContent = ok ? '✔ Compliant' : '✖ Violated';
     $('r-rule').className = 'status ' + (ok ? 'good' : 'bad');
     document.body.dataset.ready = 'true';
   }
   $('invoice-form').addEventListener('submit', calculate);
+  $('currency').addEventListener('change', calculate);
   calculate();
 </script>
 </body>
@@ -194,7 +214,7 @@ function createServer() {
   });
 }
 
-module.exports = { createServer, buildInvoice, DEFAULT_PORT };
+module.exports = { createServer, buildInvoice, DEFAULT_PORT, CURRENCIES };
 
 if (require.main === module) {
   const port = Number(process.env.PORT) || DEFAULT_PORT;
