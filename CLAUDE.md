@@ -1,5 +1,30 @@
 # CLAUDE.md — Master Context Router
 
+## 📋 STEP 0: CREATE THE GITHUB PROJECT TASK FIRST
+
+**BEFORE editing any code or running any test in a worktree, you MUST create the task on the "Enterprise Worktree Task Tracker" GitHub Project:**
+
+```bash
+node scripts/manage-project-task.js create --title "<Task Name>" --type "<Task|Issue|Bug>" --severity "<Low|Medium|High|Critical>" --status "Open"
+```
+
+- **Task Name:** a short title for the work. **Type:** `Task`, `Issue` or `Bug`.
+  **Severity:** `Low` (the default if the user doesn't say), `Medium`, `High`, `Critical`.
+- Pick Type and Severity from the user's request; if unclear, use `Bug` for fixes,
+  `Task` for new work, and `Low` severity. Tell the user the issue number you created.
+- This creates the GitHub Issue, adds it to the board with **Status: Open**, and saves
+  `qa-evidence/active-task.json` for this branch.
+- **Status lifecycle (automatic):**
+  - `Open`: task created (this step).
+  - `Testing`: set automatically when you run `node scripts/run-pre-pr-audit.js`.
+  - `Closed`: set automatically when the user approves and you run
+    `node scripts/run-pre-pr-audit.js --manual-passed "<notes>"`, right before
+    `gh pr create`. The PR body contains `Closes #<issue>`, so the issue closes on merge.
+  - `Pending`: set by hand if the work is blocked:
+    `node scripts/manage-project-task.js status --set Pending --note "<why>"`.
+- CI blocks any PR whose audit report has no linked task or whose lifecycle is not
+  `Open -> Testing -> Closed`.
+
 ## ⛔ DEFINITION OF DONE FOR ANY CODE EDIT
 
 **CRITICAL WORKFLOW RULE: Whenever a user asks you to fix a bug or change any code (even if they do NOT mention testing or PRs in their prompt), you are FORBIDDEN from ending your turn right after editing the file. In the exact same turn, immediately after editing the code, you MUST:**
@@ -16,9 +41,10 @@ How to do it:
   stopped when the audit ends.
 - Show the API Flight-Time Telemetry table and the RULE #404 result from
   `qa-evidence/PR_AUDIT_REPORT.md` in the chat.
+- The audit moves the linked task to **Testing** on the project board.
 - When the user replies APPROVED (or "Manual check passed"), record it with
-  `node scripts/run-pre-pr-audit.js --manual-passed "<user's notes>"`, then commit the
-  code together with everything in `qa-evidence/`.
+  `node scripts/run-pre-pr-audit.js --manual-passed "<user's notes>"` (this moves the
+  task to **Closed**), then commit the code together with everything in `qa-evidence/`.
 - A Git pre-commit hook (`.githooks/pre-commit`) enforces this: a commit that changes
   `src/` is refused unless the staged audit report contains "✅ Manual check passed".
   Run `node scripts/install-hooks.js` once per clone to turn it on.
@@ -85,6 +111,10 @@ that lacks fresh evidence in `qa-evidence/`.
 
 ```bash
 node scripts/install-hooks.js               # once per clone: turn on the pre-commit hook
+node scripts/manage-project-task.js create --title "..." --type Bug --severity Low   # STEP 0
+node scripts/manage-project-task.js status --set Pending --note "..."   # manual status change
+node scripts/manage-project-task.js show    # show the active task for this branch
+node scripts/manage-project-task.js setup   # (re)create the project board, fields and labels
 node tests/verify-app.js                    # smoke test: modules load and run without crashing
 node src/server.js                          # run the app on http://localhost:3456
 node scripts/run-pre-pr-audit.js            # RULE 2: API telemetry + UI screenshot + report

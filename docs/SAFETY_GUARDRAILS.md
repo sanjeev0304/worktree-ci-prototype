@@ -1,5 +1,31 @@
 # Safety Guardrails
 
+## 📋 Guardrail 0: every change starts as a GitHub Project task
+
+**Before editing code or running any test in a worktree**, Claude must run:
+
+```bash
+node scripts/manage-project-task.js create --title "<Task Name>" --type "<Task|Issue|Bug>" --severity "<Low|Medium|High|Critical>" --status "Open"
+```
+
+Severity defaults to `Low`. The task lives on the **Enterprise Worktree Task Tracker**
+GitHub Project (fields: Task Name, Severity, Type, Status), mirrored as `severity:*`,
+`type:*` and `status:*` labels on the issue.
+
+| When | Status | Set by |
+|---|---|---|
+| Task created, before any code edit or test | `Open` | `manage-project-task.js create` |
+| Pre-PR audit runs | `Testing` | `run-pre-pr-audit.js` (automatic) |
+| User approves the manual check, right before `gh pr create` | `Closed` | `run-pre-pr-audit.js --manual-passed` (automatic) |
+| Work blocked or on hold | `Pending` | `manage-project-task.js status --set Pending` |
+
+The PR body (the audit report) includes `Closes #<issue>`, so the issue closes when
+the PR merges.
+
+- **CI:** a PR is blocked unless its audit report has a linked task with a valid Task
+  ID (an existing issue), Task Name, Type, Severity and the status lifecycle
+  `Open -> Testing -> Closed`.
+
 ## ⛔ DEFINITION OF DONE FOR ANY CODE EDIT
 
 A code change is **not done** when the file is saved. For every bug fix or code

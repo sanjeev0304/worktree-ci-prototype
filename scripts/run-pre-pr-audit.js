@@ -23,6 +23,7 @@ const http = require('http');
 const { spawn, spawnSync, execSync } = require('child_process');
 const { performance } = require('perf_hooks');
 const { renderInvoiceSnapshot } = require('./lib/png-snapshot');
+const tasks = require('./manage-project-task');
 
 const ROOT = path.resolve(__dirname, '..');
 const PORT = Number(process.env.PORT) || 3456;
@@ -294,7 +295,34 @@ async function captureScreenshot(primary) {
 // ---------- report ----------
 const cell = (s) => String(s).replace(/\|/g, '\\|').replace(/\n/g, ' ');
 
-function buildReport({ info, results, shotMethod, args, generatedAt }) {
+function taskSection(task) {
+  const out = ['## 📋 Linked GitHub Project Task', ''];
+  if (!task) {
+    out.push('**❌ No linked GitHub Project task for this branch.** The PR will be blocked by CI.', '');
+    out.push('Create one before editing code:', '', '```bash');
+    out.push('node scripts/manage-project-task.js create --title "<Task Name>" --type <Task|Issue|Bug> --severity <Low|Medium|High|Critical>');
+    out.push('```', '');
+    return out;
+  }
+  const id = task.issueUrl ? `[#${task.issueNumber}](${task.issueUrl})` : `#${task.issueNumber}`;
+  const board = task.projectUrl
+    ? `[${tasks.PROJECT_TITLE}](${task.projectUrl})`
+    : task.mode === 'dry-run'
+      ? '_dry run (not on GitHub)_'
+      : '_labels fallback (not on project board)_';
+  out.push('| Field | Value |', '|---|---|');
+  out.push(`| **Task ID** | ${id} |`);
+  out.push(`| **Task Name** | ${cell(task.taskName)} |`);
+  out.push(`| **Type** | ${task.type} |`);
+  out.push(`| **Severity** | ${task.severity} |`);
+  out.push(`| **Status Lifecycle** | ${tasks.lifecycle(task)} |`);
+  out.push(`| **Current Status** | ${task.status} |`);
+  out.push(`| **Project Board** | ${board} |`, '');
+  out.push(`Closes #${task.issueNumber}`, '');
+  return out;
+}
+
+function buildReport({ info, results, shotMethod, args, generatedAt, task }) {
   const primary = results.find((r) => r.primary);
   const imgUrl = info.slug
     ? `https://github.com/${info.slug}/blob/${encodeURIComponent(info.branch)}/qa-evidence/latest-ui-proof.png?raw=true`
@@ -302,6 +330,7 @@ function buildReport({ info, results, shotMethod, args, generatedAt }) {
 
   const out = [];
   out.push('# 🧪 Pre-PR Audit Report', '');
+  out.push(...taskSection(task));
   out.push('| | |', '|---|---|');
   out.push(`| **Branch** | \`${info.branch}\` |`);
   out.push(`| **Audited commit** | \`${info.commit}\`${info.dirty ? ' + uncommitted changes' : ''} |`);
@@ -366,6 +395,7 @@ function buildReport({ info, results, shotMethod, args, generatedAt }) {
   out.push('');
 
   out.push('## 6. Pre-PR Protocol Checklist', '');
+  out.push(`- [${task ? 'x' : ' '}] RULE 0: GitHub Project task created before editing code${task ? ` (#${task.issueNumber})` : ''}`);
   out.push('- [x] RULE 1: PR not opened straight after editing code');
   out.push(`- [x] RULE 2: Pre-PR audit run (API telemetry + screenshot)`);
   out.push(`- [${args.manualPassed ? 'x' : ' '}] RULE 3: Manual check on ${BASE_URL} confirmed by the user`);
@@ -383,6 +413,17 @@ async function main() {
   log(`Pre-PR audit started on branch ${info.branch} (${info.commit}).`);
   let server = null;
   let exitCode = 0;
+  let task = tasks.loadActiveTask({ branch: tasks.currentBranch() });
+  if (!task) {
+    log('❌ No linked GitHub Project task for this branch. Run: node scripts/manage-project-task.js create ...');
+    exitCode = 1;
+  } else if (task.status !== 'Testing' && !(args.manualPassed && task.status === 'Closed')) {
+    // Audit started: the task moves to Testing (also re-opens a Closed task if the code is re-audited).
+    task = tasks.setStatus('Testing', { quiet: true, note: 'Pre-PR audit started (`scripts/run-pre-pr-audit.js`).' }) || task;
+    log(`Task #${task.issueNumber} "${task.taskName}" moved to Testing on GitHub Projects.`);
+  } else {
+    log(`Task #${task.issueNumber} "${task.taskName}" is ${task.status}.`);
+  }
   try {
     server = await ensureServer();
     const results = await runApiTests();
@@ -392,13 +433,23 @@ async function main() {
     const shotMethod = await captureScreenshot(primary);
     if (!shotMethod) exitCode = 1;
 
-    if (args.manualPassed) log(`Manual check recorded as PASSED by ${info.author}.`);
+    if (args.manualPassed) {
+      log(`Manual check recorded as PASSED by ${info.author}.`);
+      if (task && task.status !== 'Closed') {
+        // Manually approved and ready for the PR: the task moves to Closed.
+        // The issue itself closes when the PR (whose body says "Closes #N") is merged.
+        const note = `Manual check passed. PR ready.${args.manualNotes ? `\n\n> ${args.manualNotes}` : ''}`;
+        task = tasks.setStatus('Closed', { quiet: true, note }) || task;
+        log(`Task #${task.issueNumber} moved to Closed on GitHub Projects (issue closes when the PR merges).`);
+      }
+    }
     log(`Audit finished: ${exitCode === 0 ? 'evidence complete' : 'evidence INCOMPLETE'}.`);
 
     const generatedAt = new Date().toISOString();
-    fs.writeFileSync(REPORT, buildReport({ info, results, shotMethod, args, generatedAt }));
+    fs.writeFileSync(REPORT, buildReport({ info, results, shotMethod, args, generatedAt, task }));
     console.log(`\nReport written: qa-evidence/PR_AUDIT_REPORT.md`);
     if (primary.rule === 'FAIL') console.log('⚠️  RULE #404 is violated by the current code (see report section 2).');
+    if (!task) console.log('❌ No linked GitHub Project task: run node scripts/manage-project-task.js create ... then re-run the audit.');
     if (!args.manualPassed) console.log('⏳ Manual check pending: test http://localhost:3456, then re-run with --manual-passed "<notes>".');
   } catch (err) {
     log(`Audit failed: ${err.message}`);

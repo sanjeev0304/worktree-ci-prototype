@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: read
+  issues: read
 
 jobs:
   safety-gate:
@@ -35,6 +36,8 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           HEAD_REF: ${{ github.head_ref }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
 
@@ -125,6 +128,45 @@ jobs:
             REASONS="${REASONS}- Manual verification (Protocol RULE 3) not recorded: \"Manual check passed\" is missing from \`${AUDIT_REPORT}\`."$'\n'
           fi
 
+          # Linked GitHub Project task (Guardrail 0), read from the report's task table.
+          task_field() {
+            [ -f "$AUDIT_REPORT" ] || return 0
+            grep -m1 -F "| **$1** | " "$AUDIT_REPORT" | sed -E 's/^\| \*\*[^*]+\*\* \| (.*) \|[[:space:]]*$/\1/' || true
+          }
+          TASK_ID="$(task_field 'Task ID' | grep -oE '#[0-9]+' | head -1 | tr -d '#' || true)"
+          TASK_NAME="$(task_field 'Task Name')"
+          TASK_TYPE="$(task_field 'Type')"
+          TASK_SEVERITY="$(task_field 'Severity')"
+          TASK_LIFECYCLE="$(task_field 'Status Lifecycle')"
+          LIFECYCLE_RE='^Open -> Testing( -> [A-Za-z]+)* -> Closed$'
+          TASK_PROBLEMS=""
+          [ -n "$TASK_ID" ] || TASK_PROBLEMS="${TASK_PROBLEMS}no Task ID; "
+          [ -n "$TASK_NAME" ] || TASK_PROBLEMS="${TASK_PROBLEMS}no Task Name; "
+          [[ "$TASK_TYPE" =~ ^(Task|Issue|Bug)$ ]] || TASK_PROBLEMS="${TASK_PROBLEMS}Type '${TASK_TYPE}' is not Task/Issue/Bug; "
+          [[ "$TASK_SEVERITY" =~ ^(Low|Medium|High|Critical)$ ]] || TASK_PROBLEMS="${TASK_PROBLEMS}Severity '${TASK_SEVERITY}' is not Low/Medium/High/Critical; "
+          [[ "$TASK_LIFECYCLE" =~ $LIFECYCLE_RE ]] || TASK_PROBLEMS="${TASK_PROBLEMS}lifecycle '${TASK_LIFECYCLE}' is not Open -> Testing -> Closed; "
+
+          # The Task ID must be a real issue in this repository (not a pull request).
+          ISSUE_CHECK="not checked"
+          if [ -n "$TASK_ID" ]; then
+            if [ -z "${GH_TOKEN:-}" ]; then
+              ISSUE_CHECK="⚠️ not verified (no token)"
+            elif IS_ISSUE="$(gh api "repos/${REPO}/issues/${TASK_ID}" --jq '.pull_request == null' 2>/dev/null)" && [ "$IS_ISSUE" = "true" ]; then
+              ISSUE_CHECK="✅ issue #${TASK_ID} exists"
+            else
+              ISSUE_CHECK="❌ issue #${TASK_ID} not found"
+              TASK_PROBLEMS="${TASK_PROBLEMS}issue #${TASK_ID} does not exist in ${REPO}; "
+            fi
+          fi
+
+          if [ -z "$TASK_PROBLEMS" ]; then
+            TASK_STATUS="🟢 **LINKED**: task #${TASK_ID} completed its lifecycle."
+          else
+            FAIL=true
+            TASK_STATUS="🔴 **INVALID OR MISSING**: ${TASK_PROBLEMS%; }."
+            REASONS="${REASONS}- GitHub Project task check failed (${TASK_PROBLEMS%; }). Create the task first with \`node scripts/manage-project-task.js create ...\`, then re-run the audit."$'\n'
+          fi
+
           if [ "$SMOKE_OUTCOME" = "success" ]; then
             SMOKE_STATUS="🟢 **PASSED**"
           else
@@ -172,7 +214,19 @@ jobs:
             echo
             echo "**Manual verification:** ${MANUAL_STATUS}"
             echo
-            echo "## e) Final verdict for Lead Architect"
+            echo "## e) 📋 Linked GitHub Project task"
+            echo
+            echo "| Field | Value | |"
+            echo "|---|---|---|"
+            echo "| Task ID | ${TASK_ID:+#}${TASK_ID:-—} | ${ISSUE_CHECK} |"
+            echo "| Task Name | ${TASK_NAME:-—} | $([ -n "$TASK_NAME" ] && echo ✅ || echo ❌) |"
+            echo "| Type | ${TASK_TYPE:-—} | $([[ "$TASK_TYPE" =~ ^(Task|Issue|Bug)$ ]] && echo ✅ || echo ❌) |"
+            echo "| Severity | ${TASK_SEVERITY:-—} | $([[ "$TASK_SEVERITY" =~ ^(Low|Medium|High|Critical)$ ]] && echo ✅ || echo ❌) |"
+            echo "| Status Lifecycle | ${TASK_LIFECYCLE:-—} | $([[ "$TASK_LIFECYCLE" =~ $LIFECYCLE_RE ]] && echo ✅ || echo ❌) |"
+            echo
+            echo "${TASK_STATUS}"
+            echo
+            echo "## f) Final verdict for Lead Architect"
             echo
             if [ "$FAIL" = true ]; then
               echo "> ### ❌ BLOCKED: do not merge"
@@ -183,14 +237,14 @@ jobs:
             else
               echo "> ### ✅ APPROVED FOR REVIEW"
               echo ">"
-              echo "> Core layer untouched, blast radius within limits, smoke test passed, Pre-PR Audit evidence present, manual check confirmed. Safe to review and merge."
+              echo "> Core layer untouched, blast radius within limits, smoke test passed, Pre-PR Audit evidence present, manual check confirmed, GitHub Project task #${TASK_ID} linked and Closed. Safe to review and merge."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
           echo "Files: ${FILE_COUNT} | +${ADDED} -${REMOVED} = ${TOTAL} | core touched: ${CORE_TOUCHED} | smoke: ${SMOKE_OUTCOME}"
 
           if [ "$FAIL" = true ]; then
-            echo "::error title=Worktree CI Gate::PR blocked. Core touched: ${CORE_TOUCHED}, lines changed: ${TOTAL} (limit ${MAX_LINES}), smoke test: ${SMOKE_OUTCOME}, audit report updated: ${REPORT_UPDATED}, screenshot updated: ${SHOT_UPDATED}."
+            echo "::error title=Worktree CI Gate::PR blocked. Core touched: ${CORE_TOUCHED}, lines changed: ${TOTAL} (limit ${MAX_LINES}), smoke test: ${SMOKE_OUTCOME}, audit report updated: ${REPORT_UPDATED}, screenshot updated: ${SHOT_UPDATED}, task: ${TASK_PROBLEMS:-ok}."
             exit 1
           fi
 
