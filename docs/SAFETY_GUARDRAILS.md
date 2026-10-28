@@ -46,6 +46,11 @@ So even if someone clicks "Create PR" early, the code can't be committed until t
 audit and manual check are done. Turn it on once per clone with
 `node scripts/install-hooks.js` (sets `git config core.hooksPath .githooks`).
 
+**Fresh worktrees:** `.githooks/post-checkout` runs whenever a worktree is created.
+It fetches `origin/main` and moves the new worktree onto it, so every task starts from
+the latest code and rules. If the branch already has its own commits, it warns you to
+run `git merge origin/main` instead.
+
 ---
 
 These guardrails protect production. The CI gate

@@ -1,0 +1,46 @@
+#!/bin/sh
+# post-checkout — every new worktree starts from the latest origin/main.
+#
+# Git runs this after `git worktree add` (and after `git clone`). In that case the
+# previous HEAD ($1) is all zeros. The hook then fetches origin/main and:
+#   - moves the new worktree onto origin/main when its branch has no commits of its
+#     own (it was only cut from an old base), or
+#   - warns when the branch has its own work and is behind main, so you merge main.
+# Normal branch switches are left alone. Offline? It warns and carries on.
+
+prev="$1"
+flag="$3"
+
+# Only act on a brand-new checkout (new worktree or clone), not on branch switches.
+[ "$flag" = "1" ] || exit 0
+case "$prev" in
+  *[!0]*) exit 0 ;;
+esac
+
+if ! git fetch --quiet origin main 2>/dev/null; then
+  echo "⚠️  post-checkout: could not fetch origin/main (offline?). This worktree may be out of date." >&2
+  exit 0
+fi
+
+latest="$(git rev-parse origin/main)"
+head="$(git rev-parse HEAD)"
+branch="$(git symbolic-ref --quiet --short HEAD || echo '(detached)')"
+
+[ "$head" = "$latest" ] && { echo "✅ Worktree is on the latest main (${latest%"${latest#???????}"})."; exit 0; }
+
+if git merge-base --is-ancestor "$head" "$latest"; then
+  # No commits of its own: safe to move it forward to the latest main.
+  if [ -n "$(git status --porcelain)" ]; then
+    echo "⚠️  post-checkout: $branch is behind origin/main but has local changes; not updating." >&2
+    exit 0
+  fi
+  git reset --quiet --hard "$latest"
+  echo "✅ Worktree $branch updated to the latest main (${latest%"${latest#???????}"})."
+else
+  behind="$(git rev-list --count "HEAD..$latest")"
+  if [ "$behind" -gt 0 ]; then
+    echo "⚠️  $branch has its own commits and is $behind commit(s) behind origin/main." >&2
+    echo "    Run: git merge origin/main" >&2
+  fi
+fi
+exit 0

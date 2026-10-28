@@ -48,6 +48,9 @@ How to do it:
 - A Git pre-commit hook (`.githooks/pre-commit`) enforces this: a commit that changes
   `src/` is refused unless the staged audit report contains "✅ Manual check passed".
   Run `node scripts/install-hooks.js` once per clone to turn it on.
+- New worktrees start from the latest code: `.githooks/post-checkout` fetches
+  `origin/main` when a worktree is created and moves it there (or warns you to
+  `git merge origin/main` if the branch already has its own commits).
 
 ---
 
@@ -110,7 +113,7 @@ that lacks fresh evidence in `qa-evidence/`.
 ## Commands
 
 ```bash
-node scripts/install-hooks.js               # once per clone: turn on the pre-commit hook
+node scripts/install-hooks.js               # once per clone: turn on the Git hooks (pre-commit + post-checkout)
 node scripts/manage-project-task.js create --title "..." --type Bug --severity Low   # STEP 0
 node scripts/manage-project-task.js status --set Pending --note "..."   # manual status change
 node scripts/manage-project-task.js show    # show the active task for this branch

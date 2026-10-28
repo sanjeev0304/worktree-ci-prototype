@@ -32,4 +32,5 @@ git('config', 'core.hooksPath', '.githooks');
 
 console.log(`✅ Git hooks installed: core.hooksPath = ${git('config', '--get', 'core.hooksPath')}`);
 for (const hook of hooks) console.log(`   • .githooks/${hook}`);
-console.log('\nCommits that change src/ now need "✅ Manual check passed" in the staged qa-evidence/PR_AUDIT_REPORT.md.');
+console.log("\nCommits that change src/ now need \"✅ Manual check passed\" in the staged qa-evidence/PR_AUDIT_REPORT.md.");
+console.log("New worktrees now start from the latest origin/main (post-checkout hook).");
