@@ -82,33 +82,51 @@ function renderPage() {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Enterprise Invoice Dashboard</title>
 <style>
-  :root { --bg:#f4f6fb; --card:#fff; --ink:#1b2333; --muted:#5b6578; --line:#e3e7ef; --accent:#2f5bea; --bad:#c62828; --good:#1b7f3b; }
+  :root { --bg:#eef1f8; --card:#fff; --ink:#14182b; --muted:#5d6782; --line:#e2e6f0; --accent:#4f46e5; --accent2:#0ea5a4;
+    --total-bg:#eef2ff; --bad:#b91c1c; --bad-bg:#fee2e2; --good:#047857; --good-bg:#d1fae5; --shadow:0 1px 2px rgba(20,24,43,.06), 0 8px 24px rgba(20,24,43,.08); }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0d1020; --card:#171b31; --ink:#e7e9f5; --muted:#9aa3c0; --line:#2a3050; --accent:#818cf8; --accent2:#2dd4bf;
+      --total-bg:#1f2547; --bad:#fca5a5; --bad-bg:#3b1518; --good:#6ee7b7; --good-bg:#0f2f26; --shadow:0 8px 24px rgba(0,0,0,.35); }
+  }
   * { box-sizing: border-box; }
-  body { margin:0; font:15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background:var(--bg); color:var(--ink); }
-  header { background:var(--ink); color:#fff; padding:18px 24px; }
-  header h1 { margin:0; font-size:20px; }
-  header p { margin:2px 0 0; color:#b8c1d6; font-size:13px; }
-  main { max-width:760px; margin:24px auto; padding:0 16px; display:grid; gap:16px; }
-  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:20px; }
-  .card h2 { margin:0 0 12px; font-size:16px; }
-  form { display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end; }
-  label { display:grid; gap:4px; font-size:13px; color:var(--muted); }
-  select, input { font:inherit; padding:8px 10px; border:1px solid var(--line); border-radius:6px; min-width:160px; }
-  button { font:inherit; padding:9px 18px; background:var(--accent); color:#fff; border:0; border-radius:6px; cursor:pointer; }
+  body { margin:0; font:15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background:var(--bg); color:var(--ink); }
+  header { background:linear-gradient(120deg, #312e81 0%, #4f46e5 55%, #0ea5a4 100%); color:#fff; padding:28px 24px 32px; }
+  header .wrap { max-width:760px; margin:0 auto; display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; }
+  header h1 { margin:0; font-size:22px; letter-spacing:-.01em; }
+  header p { margin:4px 0 0; color:#dfe3ff; font-size:13px; }
+  .badge { font-size:12px; font-weight:600; padding:5px 12px; border-radius:999px; background:rgba(255,255,255,.16); border:1px solid rgba(255,255,255,.3); }
+  main { max-width:760px; margin:-16px auto 24px; padding:0 16px; display:grid; gap:18px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:22px; box-shadow:var(--shadow); border-top:3px solid var(--accent); }
+  #result-card { border-top-color:var(--accent2); }
+  .card h2 { margin:0 0 14px; font-size:13px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); }
+  form { display:flex; flex-wrap:wrap; gap:14px; align-items:flex-end; }
+  label { display:grid; gap:6px; font-size:13px; font-weight:600; color:var(--muted); }
+  select, input { font:inherit; padding:10px 12px; border:1px solid var(--line); border-radius:8px; min-width:180px; background:var(--card); color:var(--ink); }
+  select:focus, input:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px rgba(79,70,229,.2); }
+  button { font:inherit; font-weight:600; padding:10px 22px; background:linear-gradient(120deg, var(--accent), var(--accent2)); color:#fff; border:0; border-radius:8px; cursor:pointer; transition:transform .1s, box-shadow .1s; }
+  button:hover { transform:translateY(-1px); box-shadow:0 6px 16px rgba(79,70,229,.35); }
   table { width:100%; border-collapse:collapse; }
-  td { padding:8px 0; border-bottom:1px solid var(--line); }
-  td:last-child { text-align:right; font-variant-numeric:tabular-nums; }
-  tr.total td { font-weight:700; font-size:17px; border-bottom:0; }
-  .rule { font-size:13px; color:var(--muted); }
-  .status { font-weight:600; }
-  .status.bad { color:var(--bad); } .status.good { color:var(--good); }
-  footer { text-align:center; color:var(--muted); font-size:12px; padding-bottom:24px; }
+  td { padding:11px 4px; border-bottom:1px solid var(--line); }
+  td:first-child { color:var(--muted); }
+  td:last-child { text-align:right; font-variant-numeric:tabular-nums; font-weight:500; }
+  tr.total td { font-weight:700; font-size:19px; border-bottom:0; background:var(--total-bg); color:var(--accent); padding:14px 12px; }
+  tr.total td:first-child { border-radius:8px 0 0 8px; } tr.total td:last-child { border-radius:0 8px 8px 0; }
+  .rule { font-size:13px; color:var(--muted); margin:16px 0 0; display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; }
+  .status { font-weight:600; font-size:12px; padding:4px 12px; border-radius:999px; }
+  .status:empty { display:none; }
+  .status.bad { color:var(--bad); background:var(--bad-bg); } .status.good { color:var(--good); background:var(--good-bg); }
+  footer { text-align:center; color:var(--muted); font-size:12px; padding-bottom:28px; }
 </style>
 </head>
 <body>
 <header>
-  <h1>Enterprise Invoice Dashboard</h1>
-  <p>worktree-ci-prototype · UI &amp; Calculation Layer</p>
+  <div class="wrap">
+    <div>
+      <h1>Enterprise Invoice Dashboard</h1>
+      <p>worktree-ci-prototype · UI &amp; Calculation Layer</p>
+    </div>
+    <span class="badge">GST 18% · VIP discount ≤ 10%</span>
+  </div>
 </header>
 <main>
   <section class="card">

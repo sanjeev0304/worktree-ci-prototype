@@ -1,0 +1,28 @@
+{
+  "issueNumber": 6,
+  "issueUrl": "https://github.com/sanjeev0304/worktree-ci-prototype/issues/6",
+  "projectItemId": "PVTI_lAHOCUWpEs4BpIqdzhEQMoU",
+  "projectNumber": 1,
+  "projectUrl": "https://github.com/users/sanjeev0304/projects/1",
+  "taskName": "Refresh dashboard UI colors and layout",
+  "type": "Task",
+  "severity": "Low",
+  "status": "Closed",
+  "branch": "ui-refresh-colors",
+  "mode": "project",
+  "createdAt": "2026-10-28T16:43:48.077Z",
+  "history": [
+    {
+      "status": "Open",
+      "at": "2026-10-28T16:43:48.077Z"
+    },
+    {
+      "status": "Testing",
+      "at": "2026-10-28T16:44:52.075Z"
+    },
+    {
+      "status": "Closed",
+      "at": "2026-10-28T16:45:55.685Z"
+    }
+  ]
+}
