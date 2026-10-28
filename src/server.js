@@ -2,7 +2,7 @@
  * server.js — zero-dependency HTTP server for the Enterprise Invoice Dashboard.
  *
  *   GET  /                        Web UI (invoice form + result)
- *   POST /api/calculate-invoice   { customerType: "VIP" | "STANDARD", amount: number, currency?: "INR" | "USD" | "EUR" | "GBP" }
+ *   POST /api/calculate-invoice   { customerType: "VIP" | "SUPER_IMPORTANT" | "IMPORTANT" | "STANDARD", amount: number, currency?: "INR" | "USD" | "EUR" | "GBP" }
  *   GET  /health                  { ok: true }
  *
  * Run: node src/server.js        (default port 3456, override with PORT)
@@ -19,8 +19,9 @@ const DEFAULT_PORT = 3456;
 const SERVICE_EMAIL = 'bob@enterprise.com';
 const SERVICE_PASSWORD = 'finance123';
 
-// Demo customer used for each customer type.
-const CUSTOMER_BY_TYPE = { VIP: 'C001', STANDARD: 'C002' };
+// Demo customer used for each customer type. Only VIP customers get a discount (RULE #404),
+// so the new tiers reuse the non-VIP demo customer until core adds records for them.
+const CUSTOMER_BY_TYPE = { VIP: 'C001', SUPER_IMPORTANT: 'C002', IMPORTANT: 'C002', STANDARD: 'C002' };
 
 // Display currencies. Amounts are shown in the chosen currency as entered (no conversion).
 const CURRENCIES = { INR: 'en-IN', USD: 'en-US', EUR: 'de-DE', GBP: 'en-GB' };
@@ -33,7 +34,7 @@ function buildInvoice(body) {
   const currency = String((body && body.currency) || DEFAULT_CURRENCY).toUpperCase();
 
   if (!CUSTOMER_BY_TYPE[customerType]) {
-    throw { status: 400, message: 'customerType must be "VIP" or "STANDARD"' };
+    throw { status: 400, message: 'customerType must be one of ' + Object.keys(CUSTOMER_BY_TYPE).join(', ') };
   }
   if (!Number.isFinite(amount) || amount <= 0) {
     throw { status: 400, message: 'amount must be a positive number' };
@@ -126,6 +127,8 @@ function renderPage() {
       <label>Customer type
         <select id="customerType" name="customerType">
           <option value="VIP" selected>VIP</option>
+          <option value="SUPER_IMPORTANT">Super important</option>
+          <option value="IMPORTANT">Important</option>
           <option value="STANDARD">Standard</option>
         </select>
       </label>

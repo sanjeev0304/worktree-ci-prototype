@@ -3,8 +3,8 @@
 | | |
 |---|---|
 | **Branch** | `feature/currency-selector` |
-| **Audited commit** | `f5e4914` + uncommitted changes |
-| **Generated** | 2026-10-27T18:24:39.774Z |
+| **Audited commit** | `5c1d034` + uncommitted changes |
+| **Generated** | 2026-10-28T16:26:35.135Z |
 | **Run by** | sanjeev0304 · Node v26.0.0 · darwin |
 | **Target** | http://localhost:3456 |
 
@@ -12,11 +12,13 @@
 
 | # | Endpoint | Method | Params Sent | Status Code | Flight Time (ms) | Response Body | Result |
 |---|---|---|---|---:|---:|---|---|
-| 1 | `/api/calculate-invoice` | POST | `{"customerType":"VIP","amount":1000}` | 200 | 0.65 | `{"subtotal":1000,"discount":500,"taxable":500,"gst":25,"total":525}` | ⚠️ RULE #404 FAIL |
-| 2 | `/api/calculate-invoice` | POST | `{"customerType":"STANDARD","amount":1000}` | 200 | 0.42 | `{"subtotal":1000,"discount":0,"taxable":1000,"gst":50,"total":1050}` | ⚠️ RULE #404 FAIL |
-| 3 | `/api/calculate-invoice` | POST | `{"customerType":"GOLD","amount":1000}` | 400 | 0.38 | `{   "error": "customerType must be \"VIP\" or \"STANDARD\"" }` | ✅ OK |
+| 1 | `/api/calculate-invoice` | POST | `{"customerType":"VIP","amount":1000}` | 200 | 0.69 | `{"subtotal":1000,"discount":500,"taxable":500,"gst":25,"total":525}` | ⚠️ RULE #404 FAIL |
+| 2 | `/api/calculate-invoice` | POST | `{"customerType":"SUPER_IMPORTANT","amount":1000}` | 200 | 0.37 | `{"subtotal":1000,"discount":0,"taxable":1000,"gst":50,"total":1050}` | ⚠️ RULE #404 FAIL |
+| 3 | `/api/calculate-invoice` | POST | `{"customerType":"IMPORTANT","amount":1000}` | 200 | 0.41 | `{"subtotal":1000,"discount":0,"taxable":1000,"gst":50,"total":1050}` | ⚠️ RULE #404 FAIL |
+| 4 | `/api/calculate-invoice` | POST | `{"customerType":"STANDARD","amount":1000}` | 200 | 0.37 | `{"subtotal":1000,"discount":0,"taxable":1000,"gst":50,"total":1050}` | ⚠️ RULE #404 FAIL |
+| 5 | `/api/calculate-invoice` | POST | `{"customerType":"GOLD","amount":1000}` | 400 | 0.43 | `{   "error": "customerType must be one of VIP, SUPER_IMPORTANT, IMPORTANT, STANDARD" }` | ✅ OK |
 
-Average flight time: **0.48 ms** · slowest: **0.65 ms**
+Average flight time: **0.45 ms** · slowest: **0.69 ms**
 
 <details><summary>Full response #1: VIP invoice (primary)</summary>
 
@@ -47,12 +49,80 @@ Average flight time: **0.48 ms** · slowest: **0.65 ms**
     "gst": 25,
     "total": 525
   },
-  "generatedAt": "2026-10-27T18:24:38.440Z"
+  "generatedAt": "2026-10-28T16:26:33.708Z"
 }
 ```
 
 </details>
-<details><summary>Full response #2: Standard invoice</summary>
+<details><summary>Full response #2: Super important invoice</summary>
+
+```json
+{
+  "customer": {
+    "id": "C002",
+    "name": "Globex Retail",
+    "type": "SUPER_IMPORTANT",
+    "isVip": false
+  },
+  "items": [
+    {
+      "description": "Enterprise services",
+      "quantity": 1,
+      "unitPrice": 1000
+    }
+  ],
+  "currency": "INR",
+  "rates": {
+    "gstRate": 0.05,
+    "vipDiscount": 0
+  },
+  "invoice": {
+    "subtotal": 1000,
+    "discount": 0,
+    "taxable": 1000,
+    "gst": 50,
+    "total": 1050
+  },
+  "generatedAt": "2026-10-28T16:26:33.709Z"
+}
+```
+
+</details>
+<details><summary>Full response #3: Important invoice</summary>
+
+```json
+{
+  "customer": {
+    "id": "C002",
+    "name": "Globex Retail",
+    "type": "IMPORTANT",
+    "isVip": false
+  },
+  "items": [
+    {
+      "description": "Enterprise services",
+      "quantity": 1,
+      "unitPrice": 1000
+    }
+  ],
+  "currency": "INR",
+  "rates": {
+    "gstRate": 0.05,
+    "vipDiscount": 0
+  },
+  "invoice": {
+    "subtotal": 1000,
+    "discount": 0,
+    "taxable": 1000,
+    "gst": 50,
+    "total": 1050
+  },
+  "generatedAt": "2026-10-28T16:26:33.709Z"
+}
+```
+
+</details>
+<details><summary>Full response #4: Standard invoice</summary>
 
 ```json
 {
@@ -81,16 +151,16 @@ Average flight time: **0.48 ms** · slowest: **0.65 ms**
     "gst": 50,
     "total": 1050
   },
-  "generatedAt": "2026-10-27T18:24:38.440Z"
+  "generatedAt": "2026-10-28T16:26:33.710Z"
 }
 ```
 
 </details>
-<details><summary>Full response #3: Invalid customer type</summary>
+<details><summary>Full response #5: Invalid customer type</summary>
 
 ```json
 {
-  "error": "customerType must be \"VIP\" or \"STANDARD\""
+  "error": "customerType must be one of VIP, SUPER_IMPORTANT, IMPORTANT, STANDARD"
 }
 ```
 
@@ -113,19 +183,21 @@ Primary case: `{ customerType: "VIP", amount: 1000 }`
 ## 3. Automated UI Test Logs
 
 ```text
-[2026-10-27T18:24:38.430Z] Pre-PR audit started on branch feature/currency-selector (f5e4914).
-[2026-10-27T18:24:38.439Z] Server already running at http://localhost:3456; reusing it.
-[2026-10-27T18:24:38.440Z] API VIP invoice (primary): POST /api/calculate-invoice {"customerType":"VIP","amount":1000} → 200 in 0.65 ms · RULE #404 FAIL
-[2026-10-27T18:24:38.440Z] API Standard invoice: POST /api/calculate-invoice {"customerType":"STANDARD","amount":1000} → 200 in 0.42 ms · RULE #404 FAIL
-[2026-10-27T18:24:38.441Z] API Invalid customer type: POST /api/calculate-invoice {"customerType":"GOLD","amount":1000} → 400 in 0.38 ms
-[2026-10-27T18:24:38.441Z] Playwright not installed; trying headless Chrome.
-[2026-10-27T18:24:38.441Z] Using headless Chrome: /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
-[2026-10-27T18:24:39.251Z] UI: page loaded, form auto-submitted (VIP, 1000); ready=true.
-[2026-10-27T18:24:39.251Z] UI: dashboard shows total ₹525.00.
-[2026-10-27T18:24:39.251Z] UI: total matches API (525): yes
-[2026-10-27T18:24:39.774Z] Screenshot saved: qa-evidence/latest-ui-proof.png (54201 bytes) via Headless Chrome.
-[2026-10-27T18:24:39.774Z] Manual check recorded as PASSED by sanjeev0304.
-[2026-10-27T18:24:39.774Z] Audit finished: evidence complete.
+[2026-10-28T16:26:33.698Z] Pre-PR audit started on branch feature/currency-selector (5c1d034).
+[2026-10-28T16:26:33.708Z] Server already running at http://localhost:3456; reusing it.
+[2026-10-28T16:26:33.708Z] API VIP invoice (primary): POST /api/calculate-invoice {"customerType":"VIP","amount":1000} → 200 in 0.69 ms · RULE #404 FAIL
+[2026-10-28T16:26:33.709Z] API Super important invoice: POST /api/calculate-invoice {"customerType":"SUPER_IMPORTANT","amount":1000} → 200 in 0.37 ms · RULE #404 FAIL
+[2026-10-28T16:26:33.709Z] API Important invoice: POST /api/calculate-invoice {"customerType":"IMPORTANT","amount":1000} → 200 in 0.41 ms · RULE #404 FAIL
+[2026-10-28T16:26:33.710Z] API Standard invoice: POST /api/calculate-invoice {"customerType":"STANDARD","amount":1000} → 200 in 0.37 ms · RULE #404 FAIL
+[2026-10-28T16:26:33.710Z] API Invalid customer type: POST /api/calculate-invoice {"customerType":"GOLD","amount":1000} → 400 in 0.43 ms
+[2026-10-28T16:26:33.710Z] Playwright not installed; trying headless Chrome.
+[2026-10-28T16:26:33.710Z] Using headless Chrome: /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+[2026-10-28T16:26:34.637Z] UI: page loaded, form auto-submitted (VIP, 1000); ready=true.
+[2026-10-28T16:26:34.637Z] UI: dashboard shows total ₹525.00.
+[2026-10-28T16:26:34.637Z] UI: total matches API (525): yes
+[2026-10-28T16:26:35.135Z] Screenshot saved: qa-evidence/latest-ui-proof.png (54338 bytes) via Headless Chrome.
+[2026-10-28T16:26:35.135Z] Manual check recorded as PASSED by sanjeev0304.
+[2026-10-28T16:26:35.135Z] Audit finished: evidence complete.
 ```
 
 ## 4. UI Screenshot Proof
@@ -136,11 +208,11 @@ Captured with: **Headless Chrome**
 
 ## 5. Manual Verification (Protocol RULE 3)
 
-**✅ Manual check passed** — confirmed by sanjeev0304 on 2026-10-27T18:24:39.774Z
+**✅ Manual check passed** — confirmed by sanjeev0304 on 2026-10-28T16:26:35.135Z
 
 Observation notes:
 
-> currency dropdown switches INR/USD/EUR/GBP symbols correctly; totals unchanged.
+> Dropdown lists VIP, Super important, Important, Standard. New types calculate with 0% discount. Currency switch works. RULE #404 still shows Violated (existing GST/VIP bug).
 
 ## 6. Pre-PR Protocol Checklist
 

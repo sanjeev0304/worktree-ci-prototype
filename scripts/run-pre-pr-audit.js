@@ -37,6 +37,8 @@ const VIP_CAP = 0.1;
 
 const TEST_CASES = [
   { name: 'VIP invoice (primary)', body: { customerType: 'VIP', amount: 1000 }, expectStatus: 200, primary: true },
+  { name: 'Super important invoice', body: { customerType: 'SUPER_IMPORTANT', amount: 1000 }, expectStatus: 200 },
+  { name: 'Important invoice', body: { customerType: 'IMPORTANT', amount: 1000 }, expectStatus: 200 },
   { name: 'Standard invoice', body: { customerType: 'STANDARD', amount: 1000 }, expectStatus: 200 },
   { name: 'Invalid customer type', body: { customerType: 'GOLD', amount: 1000 }, expectStatus: 400 },
 ];
