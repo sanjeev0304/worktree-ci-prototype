@@ -1,62 +1,120 @@
 name: Worktree CI Gate
 
+# Layer 1 of the PR review: deterministic checks. Every job here must pass to merge.
+# (Layer 2, the advisory Claude code review, is in claude-code-review.yml.)
+
 on:
   pull_request:
     branches: [main]
+    # "edited" re-runs the gate when the PR body (manual check, Closes #N) changes.
+    types: [opened, synchronize, reopened, edited, ready_for_review]
 
 permissions:
   contents: read
   issues: read
+  pull-requests: write
+
+concurrency:
+  group: ci-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
+  checks:
+    name: Lint · Typecheck · Unit · E2E · Smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Lint (ESLint, including architecture boundary rules)
+        run: npm run lint
+      - name: Typecheck (tsc --checkJs)
+        run: npm run typecheck
+      - name: Unit tests
+        run: npm test
+      - name: E2E tests
+        run: npm run test:e2e
+      - name: Smoke test
+        run: npm run test:smoke
+
+  audit-evidence:
+    name: Audit evidence (artifact, not committed)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Run the pre-PR audit (API flight times + UI screenshot)
+        env:
+          AUDIT_BRANCH: ${{ github.head_ref }}
+        run: node scripts/run-pre-pr-audit.js --ci
+      - name: Upload qa-evidence as a GitHub Actions artifact
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-evidence
+          path: qa-evidence/
+          retention-days: 30
+      - name: Post the evidence on the PR
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+        run: |
+          {
+            echo "<!-- ci-audit-evidence -->"
+            echo "📎 **Screenshot + report:** [qa-evidence artifact]($ARTIFACT_URL) · \`gh run download ${{ github.run_id }} -n qa-evidence\`"
+            echo
+            cat qa-evidence/PR_AUDIT_REPORT.md
+          } > comment.md
+          # One sticky comment per PR, updated on every push.
+          id="$(gh api "repos/${{ github.repository }}/issues/$PR/comments" --paginate \
+                --jq '.[] | select(.body | startswith("<!-- ci-audit-evidence -->")) | .id' | head -1)"
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$id" -F body=@comment.md > /dev/null
+          else
+            gh pr comment "$PR" --body-file comment.md
+          fi
+
   safety-gate:
     name: Safety & Blast Radius Gate
     runs-on: ubuntu-latest
-
     steps:
       - name: Check out code (full history for diffing)
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Run smoke test (node tests/verify-app.js)
-        id: smoke
-        continue-on-error: true
-        run: node tests/verify-app.js
-
       - name: Analyse blast radius and write executive report
         env:
-          SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_BODY: ${{ github.event.pull_request.body }}
           HEAD_REF: ${{ github.head_ref }}
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
+          # Lead Architect(s) (Person A): the only authors allowed to change the core layer.
+          LEAD_ARCHITECTS: sanjeev0304
         run: |
           set -euo pipefail
 
           CORE_FILE="src/core-engine.js"
           MAX_LINES=80
-          AUDIT_REPORT="qa-evidence/PR_AUDIT_REPORT.md"
-          AUDIT_SHOT="qa-evidence/latest-ui-proof.png"
+          # Only application code counts toward the blast radius. Governance files
+          # (.github/, scripts/, docs) are gated by CODEOWNERS review instead.
+          SIZE_SCOPE_RE='^(src|tests)/'
 
           git fetch --no-tags origin main
           RANGE="origin/main...HEAD"
 
-          # Per-file added/removed counts. Binary files show "-", counted as 0.
           NUMSTAT="$(git diff --numstat "$RANGE")"
-
-          ADDED=0
-          REMOVED=0
-          FILE_ROWS=""
-          FILE_COUNT=0
-          CORE_TOUCHED=false
+          ADDED=0; REMOVED=0; FILE_ROWS=""; FILE_COUNT=0; CORE_TOUCHED=false; EVIDENCE_COMMITTED=false
 
           while IFS=$'\t' read -r add del file; do
             [ -z "${file:-}" ] && continue
@@ -64,119 +122,90 @@ jobs:
             [ "$del" = "-" ] && del=0
             FILE_COUNT=$((FILE_COUNT + 1))
             marker=""
-            # Generated audit evidence does not count toward the line limit.
-            if [[ "$file" == qa-evidence/* ]]; then
-              marker=" 🧪 _evidence, not counted_"
+            if [[ "$file" =~ $SIZE_SCOPE_RE ]]; then
+              ADDED=$((ADDED + add)); REMOVED=$((REMOVED + del))
             else
-              ADDED=$((ADDED + add))
-              REMOVED=$((REMOVED + del))
+              marker=" _not counted_"
             fi
-            if [ "$file" = "$CORE_FILE" ]; then
-              CORE_TOUCHED=true
-              marker=" ⛔ **RESTRICTED**"
-            fi
+            if [ "$file" = "$CORE_FILE" ]; then CORE_TOUCHED=true; marker=" ⛔ **RESTRICTED**"; fi
             FILE_ROWS="${FILE_ROWS}| \`${file}\`${marker} | +${add} | -${del} |"$'\n'
           done <<< "$NUMSTAT"
-
-          # Also catch renames/deletes of the core file.
-          if git diff --name-only "$RANGE" | grep -qx "$CORE_FILE"; then
-            CORE_TOUCHED=true
-          fi
+          git diff --name-only "$RANGE" | grep -qx "$CORE_FILE" && CORE_TOUCHED=true
+          # Binary files show "-" in numstat; catch any newly added qa-evidence file too.
+          git diff --name-only --diff-filter=AM "$RANGE" -- qa-evidence/ | grep -q . && EVIDENCE_COMMITTED=true
 
           TOTAL=$((ADDED + REMOVED))
+          FAIL=false; REASONS=""
+          fail() { FAIL=true; REASONS="${REASONS}- $1"$'\n'; }
 
-          # Decide verdict.
-          FAIL=false
-          REASONS=""
-          if [ "$CORE_TOUCHED" = true ]; then
-            FAIL=true
-            CORE_STATUS="🔴 **VIOLATION**: \`${CORE_FILE}\` was modified. Only the Lead Architect (Person A) may change the core layer."
-            REASONS="${REASONS}- Restricted core file \`${CORE_FILE}\` was modified."$'\n'
+          # 1. Core layer: only the Lead Architect may change it.
+          IS_LEAD=false
+          for lead in $LEAD_ARCHITECTS; do [ "$PR_AUTHOR" = "$lead" ] && IS_LEAD=true; done
+          if [ "$CORE_TOUCHED" = true ] && [ "$IS_LEAD" = false ]; then
+            CORE_STATUS="🔴 **VIOLATION**: \`${CORE_FILE}\` was modified by @${PR_AUTHOR}. Only the Lead Architect may change it."
+            fail "Restricted core file \`${CORE_FILE}\` was modified by a non-Lead Architect."
+          elif [ "$CORE_TOUCHED" = true ]; then
+            CORE_STATUS="🟡 **LEAD ARCHITECT CHANGE**: \`${CORE_FILE}\` modified by @${PR_AUTHOR}."
           else
             CORE_STATUS="🟢 **SAFE**: \`${CORE_FILE}\` was not touched."
           fi
 
+          # 2. Blast radius of application code.
           if [ "$TOTAL" -gt "$MAX_LINES" ]; then
-            FAIL=true
-            SIZE_STATUS="🔴 **TOO LARGE**: ${TOTAL} lines changed (limit ${MAX_LINES})."
-            REASONS="${REASONS}- ${TOTAL} lines changed, over the ${MAX_LINES}-line limit. Split this PR."$'\n'
+            SIZE_STATUS="🔴 **TOO LARGE**: ${TOTAL} app-code lines changed (limit ${MAX_LINES})."
+            fail "${TOTAL} lines changed in src/ + tests/, over the ${MAX_LINES}-line limit. Split this PR."
           else
-            SIZE_STATUS="🟢 **WITHIN LIMIT**: ${TOTAL} of ${MAX_LINES} lines."
+            SIZE_STATUS="🟢 **WITHIN LIMIT**: ${TOTAL} of ${MAX_LINES} app-code lines (src/ + tests/)."
           fi
 
-          # Pre-PR Audit evidence: both files must be updated in this PR.
-          CHANGED_FILES="$(git diff --name-only "$RANGE")"
-          REPORT_UPDATED=false
-          SHOT_UPDATED=false
-          grep -qx "$AUDIT_REPORT" <<< "$CHANGED_FILES" && [ -f "$AUDIT_REPORT" ] && REPORT_UPDATED=true
-          grep -qx "$AUDIT_SHOT" <<< "$CHANGED_FILES" && [ -f "$AUDIT_SHOT" ] && SHOT_UPDATED=true
-
-          if [ "$REPORT_UPDATED" = true ] && [ "$SHOT_UPDATED" = true ]; then
-            AUDIT_STATUS="🟢 **PRESENT**: audit report and UI screenshot were updated in this PR."
+          # 3. No binary/test-run evidence in Git.
+          if [ "$EVIDENCE_COMMITTED" = true ]; then
+            EVIDENCE_STATUS="🔴 **COMMITTED**: qa-evidence/ files are in this PR. Evidence lives in Actions artifacts only."
+            fail "qa-evidence/ files were committed. Run \`git rm -r --cached qa-evidence\`."
           else
-            FAIL=true
-            AUDIT_STATUS="🔴 **MISSING**: run \`node scripts/run-pre-pr-audit.js\` and commit the files in \`qa-evidence/\`."
-            [ "$REPORT_UPDATED" = true ] || REASONS="${REASONS}- \`${AUDIT_REPORT}\` was not updated. The Pre-PR Audit was not run."$'\n'
-            [ "$SHOT_UPDATED" = true ] || REASONS="${REASONS}- \`${AUDIT_SHOT}\` was not updated. No fresh UI screenshot proof."$'\n'
+            EVIDENCE_STATUS="🟢 **NOT IN GIT**: evidence is uploaded as the \`qa-evidence\` Actions artifact."
           fi
 
-          if [ "$REPORT_UPDATED" = true ] && grep -q "Manual check passed" "$AUDIT_REPORT"; then
-            MANUAL_STATUS="🟢 **CONFIRMED**: \"Manual check passed\" is recorded (see report section 5)."
+          # 4. Branch naming: <type>/<issue-id>-<short-description>.
+          if node scripts/lib/branch-name.js check "$HEAD_REF" 2>/dev/null; then
+            BRANCH_ISSUE="$(sed -E 's#^[a-z]+/([0-9]+)-.*#\1#' <<< "$HEAD_REF")"
+            BRANCH_STATUS="🟢 **VALID**: \`${HEAD_REF}\` (issue #${BRANCH_ISSUE})."
           else
-            FAIL=true
-            MANUAL_STATUS="🔴 **MISSING**: no \"Manual check passed\" in the audit report. Test on http://localhost:3456, then run \`node scripts/run-pre-pr-audit.js --manual-passed \"<notes>\"\`."
-            REASONS="${REASONS}- Manual verification (Protocol RULE 3) not recorded: \"Manual check passed\" is missing from \`${AUDIT_REPORT}\`."$'\n'
+            BRANCH_ISSUE=""
+            BRANCH_STATUS="🔴 **INVALID**: \`${HEAD_REF}\` is not \`<type>/<issue-id>-<short-description>\`."
+            fail "Branch \`${HEAD_REF}\` does not follow \`<type>/<issue-id>-<short-description>\` (e.g. fix/104-login-timeout)."
           fi
 
-          # Linked GitHub Project task (Guardrail 0), read from the report's task table.
-          task_field() {
-            [ -f "$AUDIT_REPORT" ] || return 0
-            grep -m1 -F "| **$1** | " "$AUDIT_REPORT" | sed -E 's/^\| \*\*[^*]+\*\* \| (.*) \|[[:space:]]*$/\1/' || true
-          }
-          TASK_ID="$(task_field 'Task ID' | grep -oE '#[0-9]+' | head -1 | tr -d '#' || true)"
-          TASK_NAME="$(task_field 'Task Name')"
-          TASK_TYPE="$(task_field 'Type')"
-          TASK_SEVERITY="$(task_field 'Severity')"
-          TASK_LIFECYCLE="$(task_field 'Status Lifecycle')"
-          LIFECYCLE_RE='^Open -> Testing( -> [A-Za-z]+)* -> Closed$'
-          TASK_PROBLEMS=""
-          [ -n "$TASK_ID" ] || TASK_PROBLEMS="${TASK_PROBLEMS}no Task ID; "
-          [ -n "$TASK_NAME" ] || TASK_PROBLEMS="${TASK_PROBLEMS}no Task Name; "
-          [[ "$TASK_TYPE" =~ ^(Task|Issue|Bug)$ ]] || TASK_PROBLEMS="${TASK_PROBLEMS}Type '${TASK_TYPE}' is not Task/Issue/Bug; "
-          [[ "$TASK_SEVERITY" =~ ^(Low|Medium|High|Critical)$ ]] || TASK_PROBLEMS="${TASK_PROBLEMS}Severity '${TASK_SEVERITY}' is not Low/Medium/High/Critical; "
-          [[ "$TASK_LIFECYCLE" =~ $LIFECYCLE_RE ]] || TASK_PROBLEMS="${TASK_PROBLEMS}lifecycle '${TASK_LIFECYCLE}' is not Open -> Testing -> Closed; "
-
-          # The Task ID must be a real issue in this repository (not a pull request).
-          ISSUE_CHECK="not checked"
-          if [ -n "$TASK_ID" ]; then
-            if [ -z "${GH_TOKEN:-}" ]; then
-              ISSUE_CHECK="⚠️ not verified (no token)"
-            elif IS_ISSUE="$(gh api "repos/${REPO}/issues/${TASK_ID}" --jq '.pull_request == null' 2>/dev/null)" && [ "$IS_ISSUE" = "true" ]; then
-              ISSUE_CHECK="✅ issue #${TASK_ID} exists"
-            else
-              ISSUE_CHECK="❌ issue #${TASK_ID} not found"
-              TASK_PROBLEMS="${TASK_PROBLEMS}issue #${TASK_ID} does not exist in ${REPO}; "
-            fi
+          # 5. Linked task: "Closes #N" matches the branch issue, and the issue is still open
+          #    (it may only close when this PR merges: no premature closure).
+          CLOSES="$(grep -oiE '(close[sd]?|fix(e[sd])?|resolve[sd]?) #[0-9]+' <<< "${PR_BODY:-}" | grep -oE '[0-9]+' | head -1 || true)"
+          TASK_STATUS=""
+          if [ -z "$CLOSES" ]; then
+            fail "PR body has no \`Closes #<issue>\`. Use \`qa-evidence/PR_AUDIT_REPORT.md\` as the body."
+            TASK_STATUS="🔴 **MISSING**: no \`Closes #<issue>\` in the PR body."
+          elif [ -n "$BRANCH_ISSUE" ] && [ "$CLOSES" != "$BRANCH_ISSUE" ]; then
+            fail "PR body closes #${CLOSES} but the branch is for issue #${BRANCH_ISSUE}."
+            TASK_STATUS="🔴 **MISMATCH**: body closes #${CLOSES}, branch is #${BRANCH_ISSUE}."
+          else
+            STATE="$(gh api "repos/${REPO}/issues/${CLOSES}" --jq 'if .pull_request then "pr" else .state end' 2>/dev/null || echo missing)"
+            case "$STATE" in
+              open) TASK_STATUS="🟢 **LINKED**: issue #${CLOSES} is open and closes when this PR merges." ;;
+              closed) fail "Issue #${CLOSES} is already closed. Tasks close only when their PR merges."
+                      TASK_STATUS="🔴 **CLOSED EARLY**: issue #${CLOSES} was closed before merge." ;;
+              *) fail "Issue #${CLOSES} does not exist in ${REPO}."
+                 TASK_STATUS="🔴 **NOT FOUND**: #${CLOSES} is not an issue." ;;
+            esac
           fi
 
-          if [ -z "$TASK_PROBLEMS" ]; then
-            TASK_STATUS="🟢 **LINKED**: task #${TASK_ID} completed its lifecycle."
+          # 6. Manual check (Protocol RULE 3) recorded in the PR body.
+          if grep -qF "Manual check passed" <<< "${PR_BODY:-}"; then
+            MANUAL_STATUS="🟢 **CONFIRMED** in the PR body."
           else
-            FAIL=true
-            TASK_STATUS="🔴 **INVALID OR MISSING**: ${TASK_PROBLEMS%; }."
-            REASONS="${REASONS}- GitHub Project task check failed (${TASK_PROBLEMS%; }). Create the task first with \`node scripts/manage-project-task.js create ...\`, then re-run the audit."$'\n'
-          fi
-
-          if [ "$SMOKE_OUTCOME" = "success" ]; then
-            SMOKE_STATUS="🟢 **PASSED**"
-          else
-            FAIL=true
-            SMOKE_STATUS="🔴 **FAILED**: the app crashed or a smoke check failed."
-            REASONS="${REASONS}- Smoke test \`node tests/verify-app.js\` failed."$'\n'
+            MANUAL_STATUS="🔴 **MISSING**: run \`node scripts/run-pre-pr-audit.js --manual-passed \"<notes>\"\` and use the report as the PR body."
+            fail "Manual verification (Protocol RULE 3) not recorded in the PR body."
           fi
 
           [ -z "$FILE_ROWS" ] && FILE_ROWS="| _(no file changes)_ | | |"$'\n'
-
           {
             echo "# 🛡️ Executive Safety & Blast Radius Report"
             echo
@@ -189,63 +218,33 @@ jobs:
             echo "|---|---:|---:|"
             printf '%s' "$FILE_ROWS"
             echo
-            echo "## b) Lines changed"
+            echo "## b) Checks"
             echo
-            echo "| Added | Removed | Total | Limit |"
-            echo "|---:|---:|---:|---:|"
-            echo "| +${ADDED} | -${REMOVED} | **${TOTAL}** | ${MAX_LINES} |"
-            echo
-            echo "${SIZE_STATUS}"
-            echo
-            echo "## c) Core architecture status"
-            echo
-            echo "${CORE_STATUS}"
-            echo
-            echo "**Smoke test:** ${SMOKE_STATUS}"
-            echo
-            echo "## d) Pre-PR Audit evidence"
-            echo
-            echo "| Evidence | Updated in this PR |"
+            echo "| Check | Result |"
             echo "|---|---|"
-            echo "| \`${AUDIT_REPORT}\` | $([ "$REPORT_UPDATED" = true ] && echo '✅ yes' || echo '❌ no') |"
-            echo "| \`${AUDIT_SHOT}\` | $([ "$SHOT_UPDATED" = true ] && echo '✅ yes' || echo '❌ no') |"
+            echo "| App-code lines (+${ADDED} −${REMOVED}) | ${SIZE_STATUS} |"
+            echo "| Core architecture | ${CORE_STATUS} |"
+            echo "| Branch name | ${BRANCH_STATUS} |"
+            echo "| Linked task | ${TASK_STATUS} |"
+            echo "| Manual check | ${MANUAL_STATUS} |"
+            echo "| Evidence storage | ${EVIDENCE_STATUS} |"
             echo
-            echo "${AUDIT_STATUS}"
+            echo "Lint, typecheck, unit, e2e and smoke tests run in the **checks** job."
             echo
-            echo "**Manual verification:** ${MANUAL_STATUS}"
-            echo
-            echo "## e) 📋 Linked GitHub Project task"
-            echo
-            echo "| Field | Value | |"
-            echo "|---|---|---|"
-            echo "| Task ID | ${TASK_ID:+#}${TASK_ID:-—} | ${ISSUE_CHECK} |"
-            echo "| Task Name | ${TASK_NAME:-—} | $([ -n "$TASK_NAME" ] && echo ✅ || echo ❌) |"
-            echo "| Type | ${TASK_TYPE:-—} | $([[ "$TASK_TYPE" =~ ^(Task|Issue|Bug)$ ]] && echo ✅ || echo ❌) |"
-            echo "| Severity | ${TASK_SEVERITY:-—} | $([[ "$TASK_SEVERITY" =~ ^(Low|Medium|High|Critical)$ ]] && echo ✅ || echo ❌) |"
-            echo "| Status Lifecycle | ${TASK_LIFECYCLE:-—} | $([[ "$TASK_LIFECYCLE" =~ $LIFECYCLE_RE ]] && echo ✅ || echo ❌) |"
-            echo
-            echo "${TASK_STATUS}"
-            echo
-            echo "## f) Final verdict for Lead Architect"
+            echo "## c) Final verdict"
             echo
             if [ "$FAIL" = true ]; then
               echo "> ### ❌ BLOCKED: do not merge"
-              echo ">"
-              echo "> This PR breaks the safety guardrails in \`docs/SAFETY_GUARDRAILS.md\`:"
               echo
               printf '%s' "$REASONS"
             else
               echo "> ### ✅ APPROVED FOR REVIEW"
-              echo ">"
-              echo "> Core layer untouched, blast radius within limits, smoke test passed, Pre-PR Audit evidence present, manual check confirmed, GitHub Project task #${TASK_ID} linked and Closed. Safe to review and merge."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-          echo "Files: ${FILE_COUNT} | +${ADDED} -${REMOVED} = ${TOTAL} | core touched: ${CORE_TOUCHED} | smoke: ${SMOKE_OUTCOME}"
-
+          echo "Files: ${FILE_COUNT} | app-code lines: ${TOTAL} | core touched: ${CORE_TOUCHED} | branch: ${HEAD_REF} | closes: #${CLOSES:-none}"
           if [ "$FAIL" = true ]; then
-            echo "::error title=Worktree CI Gate::PR blocked. Core touched: ${CORE_TOUCHED}, lines changed: ${TOTAL} (limit ${MAX_LINES}), smoke test: ${SMOKE_OUTCOME}, audit report updated: ${REPORT_UPDATED}, screenshot updated: ${SHOT_UPDATED}, task: ${TASK_PROBLEMS:-ok}."
+            printf '%s' "$REASONS" | while read -r line; do echo "::error title=Worktree CI Gate::${line#- }"; done
             exit 1
           fi
-
           echo "✅ All guardrails passed."

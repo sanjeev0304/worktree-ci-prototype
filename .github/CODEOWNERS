@@ -1,0 +1,16 @@
+# CODEOWNERS — reviews GitHub requests automatically (docs/SAFETY_GUARDRAILS.md, Guardrail 1).
+# With "Require review from Code Owners" on in the main branch rules, these paths cannot
+# merge without the Lead Architect's (Person A) approval.
+
+# Restricted core layer: Lead Architect only.
+/src/core-engine.js        @sanjeev0304
+
+# Governance: the gates themselves must not be weakened without the Lead Architect.
+/.github/                  @sanjeev0304
+/.githooks/                @sanjeev0304
+/scripts/                  @sanjeev0304
+/eslint.config.js          @sanjeev0304
+/jsconfig.json             @sanjeev0304
+/package.json              @sanjeev0304
+/CLAUDE.md                 @sanjeev0304
+/docs/                     @sanjeev0304

@@ -1,0 +1,17 @@
+#!/bin/sh
+# pre-push: only branches named <type>/<issue-id>-<short-description> may be pushed
+# (main is exempt; deletions are allowed). The CI gate enforces the same rule on PRs.
+#
+# Turn on with: node scripts/install-hooks.js
+
+status=0
+while read -r local_ref local_sha remote_ref remote_sha; do
+  case "$local_sha" in *[!0]*) ;; *) continue ;; esac   # branch deletion
+  case "$remote_ref" in refs/heads/*) ;; *) continue ;; esac   # tags etc.
+  branch="${remote_ref#refs/heads/}"
+  if ! node scripts/lib/branch-name.js check "$branch"; then
+    echo "⛔ PUSH BLOCKED: $branch" >&2
+    status=1
+  fi
+done
+exit $status

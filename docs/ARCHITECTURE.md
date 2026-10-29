@@ -44,15 +44,27 @@ This enterprise invoicing application has **two layers** with strict ownership.
 ## Pre-PR audit: `scripts/run-pre-pr-audit.js`
 
 - Starts the server if needed, times real API calls, captures a UI screenshot and
-  writes `qa-evidence/PR_AUDIT_REPORT.md`. See Guardrail 4 in SAFETY_GUARDRAILS.md.
+  writes `qa-evidence/PR_AUDIT_REPORT.md` (git-ignored; used as the PR body).
+  See Guardrail 4 in SAFETY_GUARDRAILS.md.
 
 ## Tests
 
-- `tests/verify-app.js`: zero-dependency Node.js smoke test that loads both modules
-  and runs them end to end to catch syntax and runtime crashes.
+- `tests/unit/`: unit tests (`node --test`) for the invoice math and branch names.
+- `tests/e2e/`: starts the HTTP server and exercises the API and UI routes.
+- `tests/verify-app.js`: smoke test that loads every module and runs it end to end.
+- `npm run check` runs lint, typecheck and all three.
+
+## Static analysis
+
+- `eslint.config.js`: lint rules plus **architecture boundary rules** for the two layers.
+- `jsconfig.json`: `tsc --checkJs` typecheck of `src/`, `scripts/` and `tests/`.
+- `.github/CODEOWNERS`: the Lead Architect reviews the core layer and all governance files.
 
 ## CI
 
-- `.github/workflows/worktree-ci-gate.yml` runs on every pull request to `main`. It
-  runs the smoke test, measures the blast radius of the change, and writes an
-  "Executive Safety & Blast Radius Report" to the job summary.
+- `.github/workflows/worktree-ci-gate.yml` (blocking): lint, typecheck, unit, e2e and
+  smoke tests; the audit evidence artifact; and the safety gate (core ownership, app-code
+  diff size, branch name, linked open issue, manual check).
+- `.github/workflows/claude-code-review.yml` (advisory): Claude reviews every PR.
+- `.github/workflows/task-lifecycle.yml`: moves the task to In Review on PR open and to
+  Done on merge.

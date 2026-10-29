@@ -1,14 +1,28 @@
 #!/bin/sh
-# pre-commit: Definition of Done gate (see CLAUDE.md and docs/SAFETY_GUARDRAILS.md).
+# pre-commit: branch naming + Definition of Done gate (see CLAUDE.md and docs/SAFETY_GUARDRAILS.md).
 #
-# Refuses a commit that changes anything under src/ unless the audit report staged in
-# the SAME commit contains "✅ Manual check passed". Commits that don't touch src/
-# (docs, scripts, CI) are not affected.
+# 1. Commits go only to branches named <type>/<issue-id>-<short-description> (main is exempt).
+# 2. A commit that changes src/ needs a local audit report for THIS branch containing
+#    "✅ Manual check passed". qa-evidence/ is git-ignored: the report is checked on disk,
+#    never committed.
 #
 # Turn on with: node scripts/install-hooks.js
 
 REPORT="qa-evidence/PR_AUDIT_REPORT.md"
 MARKER="✅ Manual check passed"
+BRANCH="$(git symbolic-ref --quiet --short HEAD || echo HEAD)"
+
+if [ "$BRANCH" != "HEAD" ] && ! node scripts/lib/branch-name.js check "$BRANCH"; then
+  echo ""
+  echo "⛔ COMMIT BLOCKED: create the branch with node scripts/manage-project-task.js create ..."
+  exit 1
+fi
+
+# Evidence must never be committed, even with git add -f (removing old evidence is fine).
+if [ -n "$(git diff --cached --name-only --diff-filter=AM -- qa-evidence/)" ]; then
+  echo "⛔ COMMIT BLOCKED: qa-evidence/ must not be committed. Run: git rm -r --cached qa-evidence"
+  exit 1
+fi
 
 SRC_CHANGES=$(git diff --cached --name-only -- src/)
 [ -z "$SRC_CHANGES" ] && exit 0
@@ -27,20 +41,13 @@ fail() {
   echo "  2. Run the audit:          node scripts/run-pre-pr-audit.js"
   echo "  3. Test it in a browser, then record the manual check:"
   echo "                             node scripts/run-pre-pr-audit.js --manual-passed \"<notes>\""
-  echo "  4. Stage the evidence:     git add qa-evidence/"
-  echo "  5. Commit again."
+  echo "  4. Commit again."
   echo ""
   exit 1
 }
 
-# The report must be part of this commit, so the evidence matches the code.
-if ! git diff --cached --name-only -- "$REPORT" | grep -qx "$REPORT"; then
-  fail "$REPORT is not staged in this commit (no fresh audit for this change)."
-fi
-
-# Check the staged copy (what will actually be committed), not the working file.
-if ! git show ":$REPORT" 2>/dev/null | grep -qF "$MARKER"; then
-  fail "the staged $REPORT does not contain \"$MARKER\" (manual check not recorded)."
-fi
+[ -f "$REPORT" ] || fail "$REPORT does not exist (the audit was not run)."
+grep -qF "| **Branch** | \`$BRANCH\` |" "$REPORT" || fail "$REPORT was generated on another branch. Re-run the audit here."
+grep -qF "$MARKER" "$REPORT" || fail "$REPORT does not contain \"$MARKER\" (manual check not recorded)."
 
 exit 0
