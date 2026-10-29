@@ -7,3 +7,6 @@ node_modules/
 # Audit evidence is never committed (no binary bloat). The report goes into the PR body
 # and CI uploads the screenshot as a GitHub Actions artifact.
 qa-evidence/
+
+# macOS system files
+.DS_Store
