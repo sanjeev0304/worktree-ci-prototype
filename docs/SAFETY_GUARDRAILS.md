@@ -1,11 +1,14 @@
 # Safety Guardrails
 
-## 📋 Guardrail 0: every change starts as a GitHub Project task
+> **Prompts are guardrails; CI is the law.** Every rule below is enforced in code
+> (CI jobs, CODEOWNERS, ESLint, Git hooks), not only by Claude following instructions.
+
+## 📋 Guardrail 0: every change starts as a GitHub Project task, on its own branch
 
 **Before editing code or running any test in a worktree**, Claude must run:
 
 ```bash
-node scripts/manage-project-task.js create --title "<Task Name>" --type "<Task|Issue|Bug>" --severity "<Low|Medium|High|Critical>" --status "Open"
+node scripts/manage-project-task.js create --title "<Task Name>" --type "<Task|Issue|Bug>" --severity "<Low|Medium|High|Critical>"
 ```
 
 Severity defaults to `Low`. The task lives on the **Enterprise Worktree Task Tracker**
@@ -14,17 +17,27 @@ GitHub Project (fields: Task Name, Severity, Type, Status), mirrored as `severit
 
 | When | Status | Set by |
 |---|---|---|
-| Task created, before any code edit or test | `Open` | `manage-project-task.js create` |
-| Pre-PR audit runs | `Testing` | `run-pre-pr-audit.js` (automatic) |
-| User approves the manual check, right before `gh pr create` | `Closed` | `run-pre-pr-audit.js --manual-passed` (automatic) |
-| Work blocked or on hold | `Pending` | `manage-project-task.js status --set Pending` |
+| Issue created | `Todo` | `manage-project-task.js create` |
+| Branch `<type>/<issue-id>-<short-description>` created | `In Progress` | `manage-project-task.js create` |
+| Pull request opened | `In Review` | CI: `task-lifecycle.yml` |
+| Pull request **merged** | `Done` | CI: `task-lifecycle.yml`; GitHub closes the issue via `Closes #<issue>` |
+| PR closed without merging | `In Progress` | CI: `task-lifecycle.yml` |
+| Work on hold | `Blocked` | `manage-project-task.js status --set Blocked` |
 
-The PR body (the audit report) includes `Closes #<issue>`, so the issue closes when
-the PR merges.
+A task is never closed before its code lands: `Done` cannot be set by hand, and the CI
+gate fails a PR whose linked issue is already closed.
 
-- **CI:** a PR is blocked unless its audit report has a linked task with a valid Task
-  ID (an existing issue), Task Name, Type, Severity and the status lifecycle
-  `Open -> Testing -> Closed`.
+- **CI:** the PR body must contain `Closes #<issue>`, the issue must exist and be open,
+  and it must match the issue id in the branch name.
+
+## 🌿 Guardrail 0b: branch naming
+
+Branches are named `<type>/<issue-id>-<short-description>`, e.g. `fix/104-login-timeout`.
+`<type>` is one of `feat fix chore docs refactor test ci perf hotfix`; the description is
+lowercase words joined by `-`; the whole name is at most 60 characters.
+
+- **Local:** `.githooks/pre-commit` and `.githooks/pre-push` refuse other names.
+- **CI:** the safety gate fails a PR from a badly named branch.
 
 ## ⛔ DEFINITION OF DONE FOR ANY CODE EDIT
 
@@ -32,18 +45,18 @@ A code change is **not done** when the file is saved. For every bug fix or code
 change, even when the request doesn't mention testing or PRs, Claude must do all of
 this **in the same turn** as the edit:
 
-1. Run `node scripts/run-pre-pr-audit.js` to test the API, log flight times and
+1. Run `npm run check` (lint, typecheck, unit, e2e, smoke).
+2. Run `node scripts/run-pre-pr-audit.js` to test the API, log flight times and
    capture the screenshot.
-2. Make sure the local server is running on `http://localhost:3456`.
-3. Show the API flight-time results in the chat and ask: *"I have tested the API and
+3. Make sure the local server is running on `http://localhost:3456`.
+4. Show the API flight-time results in the chat and ask: *"I have tested the API and
    started the local server on http://localhost:3456. Please check it manually and
    reply APPROVED before I commit or create a PR."*
-4. **Not run `git commit`** until the user confirms their manual check.
+5. **Not run `git commit`** until the user confirms their manual check.
 
 **Enforced by Git:** `.githooks/pre-commit` refuses any commit that changes `src/`
-unless the staged `qa-evidence/PR_AUDIT_REPORT.md` contains "✅ Manual check passed".
-So even if someone clicks "Create PR" early, the code can't be committed until the
-audit and manual check are done. Turn it on once per clone with
+unless this branch's local `qa-evidence/PR_AUDIT_REPORT.md` contains
+"✅ Manual check passed". Turn the hooks on once per clone with
 `node scripts/install-hooks.js` (sets `git config core.hooksPath .githooks`).
 
 **Fresh worktrees:** `.githooks/post-checkout` runs whenever a worktree is created.
@@ -60,24 +73,32 @@ request to `main`.
 ## Guardrail 1: the core layer is off limits
 
 - `src/core-engine.js` must **NEVER** be modified by Person B or Person C.
-- Only the Lead Architect (Person A) may change it.
+- Only the Lead Architect (Person A, GitHub `sanjeev0304`) may change it.
 - If a fix seems to need a core change, stop and raise it with the Lead Architect
   instead of editing the file.
-- **CI:** any pull request that touches `src/core-engine.js` is marked
-  **VIOLATION** and fails.
+- **CODEOWNERS:** `.github/CODEOWNERS` makes the Lead Architect the required reviewer
+  for the core file and for every governance file (CI, hooks, scripts, lint config,
+  docs). Turn on "Require review from Code Owners" for `main` so this is enforced.
+- **ESLint boundary rules** (`eslint.config.js`): the core may not `require` the UI
+  layer or the server; the UI layer may not touch core internals
+  (`USERS`, `CUSTOMERS`, `connection`).
+- **CI:** a PR that touches `src/core-engine.js` fails unless its author is the Lead
+  Architect.
 
 ## Guardrail 2: small blast radius
 
-- Any single bug-fix PR must change **fewer than 80 lines of code** in total
-  (lines added + lines removed).
+- Any single PR may change **at most 80 lines of application code** (`src/` + `tests/`,
+  lines added + lines removed).
+- Governance files (`.github/`, `.githooks/`, `scripts/`, config, docs) do not count;
+  they are gated by CODEOWNERS review instead.
 - Split larger work into several small PRs.
-- Generated evidence in `qa-evidence/` does not count toward this limit.
-- **CI:** a pull request with more than 80 changed lines fails.
+- **CI:** a PR with more than 80 changed app-code lines fails.
 
-## Guardrail 3: nothing ships broken
+## Guardrail 3: nothing ships broken (review layer 1, deterministic)
 
-- `node tests/verify-app.js` must pass before merging.
-- **CI:** a failing smoke test fails the pull request.
+- `npm run check` must pass: ESLint, `tsc --checkJs` typecheck, unit tests
+  (`tests/unit/`), e2e tests (`tests/e2e/`) and the smoke test (`tests/verify-app.js`).
+- **CI:** the `checks` job runs all of them; any failure fails the PR.
 
 ## Guardrail 4: Mandatory 4-Step Pre-PR Protocol
 
@@ -88,13 +109,21 @@ Every pull request must go through these four steps, in order.
 | **RULE 1** | Never create a PR immediately after editing code. |
 | **RULE 2** | Always run `node scripts/run-pre-pr-audit.js` first to log API flight times, responses, and capture UI screenshots. |
 | **RULE 3** | Start the local server on `http://localhost:3456` and PAUSE to let the user manually test the application in their browser. Wait for the user to confirm (APPROVED or "Manual check passed") and record their manual observation notes with `node scripts/run-pre-pr-audit.js --manual-passed "<notes>"`. |
-| **RULE 4** | When creating the PR via `gh pr create`, inject the full contents of `qa-evidence/PR_AUDIT_REPORT.md` (API flight-time logs, manual check confirmation, embedded screenshot) into the PR description: `gh pr create --body-file qa-evidence/PR_AUDIT_REPORT.md`. |
+| **RULE 4** | Create the PR with the report as its description: `gh pr create --body-file qa-evidence/PR_AUDIT_REPORT.md`. |
 
-- **CI:** a pull request that does not update both `qa-evidence/PR_AUDIT_REPORT.md`
-  and `qa-evidence/latest-ui-proof.png` fails. Opening a PR without running the
-  Pre-PR Audit is blocked automatically.
-- **CI:** a pull request whose audit report does not contain "Manual check passed"
-  fails. Skipping the manual check (RULE 3) is blocked automatically.
+- **No evidence in Git:** `qa-evidence/` is git-ignored. CI re-runs the audit, uploads
+  the screenshot and report as the `qa-evidence` GitHub Actions artifact
+  (`gh run download <run-id> -n qa-evidence`) and posts the telemetry as a PR comment.
+  **CI** fails a PR that commits anything under `qa-evidence/`.
+- **CI:** a PR whose body does not contain "Manual check passed" fails.
+
+## Guardrail 5: AI code review (review layer 2, advisory)
+
+- `.github/workflows/claude-code-review.yml` runs Claude on every PR. It reads these
+  docs and posts inline comments on bugs, business-rule and architecture breaks,
+  security issues, and weakened gates.
+- It is advisory: it never blocks a merge. Layer 1 is the gate.
+- Needs the `ANTHROPIC_API_KEY` repository secret; without it the job skips with a notice.
 
 ## For Claude in any worktree
 

@@ -6,24 +6,34 @@
  * "Enterprise Worktree Task Tracker" project board, with these fields:
  *   Task Name (Title) · Severity (Low*, Medium, High, Critical)
  *   Type (Task, Issue, Bug; shown as "Task Type" on the board, since GitHub reserves "Type")
- *   Status (Open, Pending, Testing, Closed)
+ *   Status (Todo, In Progress, In Review, Done, Blocked)
  * Repository labels (severity:*, type:*, status:*) mirror the same values, so the task
  * is still tracked if the Projects API is unavailable.
  *
+ * Lifecycle: Todo -> In Progress -> In Review -> Done
+ *   Todo         issue created                       (create)
+ *   In Progress  branch <type>/<issue>-<slug> created (create, right after the issue)
+ *   In Review    pull request opened                 (CI: .github/workflows/task-lifecycle.yml)
+ *   Done         PR merged; GitHub closes the issue via "Closes #N" (CI, same workflow)
+ *   Blocked      work on hold                        (status --set Blocked)
+ *
  * Commands:
  *   setup                                   create/repair the project board, fields and labels
- *   create --title "<Task Name>" --type <Task|Issue|Bug> [--severity <Low|Medium|High|Critical>] [--status Open]
- *   status --set <Open|Pending|Testing|Closed> [--note "<text>"] [--close-issue]
+ *   create --title "<Task Name>" --type <Task|Issue|Bug> [--severity <Low|Medium|High|Critical>]
+ *          [--branch-type <feat|fix|chore|docs|refactor|test|ci|perf|hotfix>] [--no-branch]
+ *   status --set <In Progress|Blocked|In Review> [--note "<text>"]
+ *   sync --issue <N> --set <status> [--note "<text>"]   used by CI (no active task file needed)
  *   show                                    print the active task
  *
- * The active task is saved in qa-evidence/active-task.json (tied to the current branch).
- * Set TASK_DRY_RUN=1 to skip all GitHub calls (local demos and tests).
+ * The active task is saved in qa-evidence/active-task.json (git-ignored, tied to the branch).
+ * Set TASK_DRY_RUN=1 to skip all GitHub calls and branch creation (local demos and tests).
  */
 'use strict';
 
 const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
+const branches = require('./lib/branch-name');
 
 const ROOT = path.resolve(__dirname, '..');
 const TASK_FILE = path.join(ROOT, 'qa-evidence', 'active-task.json');
@@ -43,13 +53,16 @@ const FIELDS = {
     { name: 'Bug', color: 'RED', description: 'Defect in existing behaviour' },
   ],
   Status: [
-    { name: 'Open', color: 'GRAY', description: 'Task created, work not tested yet' },
-    { name: 'Pending', color: 'YELLOW', description: 'Blocked or on hold' },
-    { name: 'Testing', color: 'BLUE', description: 'Pre-PR audit running / awaiting manual approval' },
-    { name: 'Closed', color: 'GREEN', description: 'Manually approved, PR created' },
+    { name: 'Todo', color: 'GRAY', description: 'Issue created, work not started' },
+    { name: 'In Progress', color: 'YELLOW', description: 'Branch created, work under way' },
+    { name: 'In Review', color: 'BLUE', description: 'Pull request open' },
+    { name: 'Done', color: 'GREEN', description: 'PR merged, issue closed by GitHub' },
+    { name: 'Blocked', color: 'RED', description: 'Work on hold' },
   ],
 };
 const DEFAULT_SEVERITY = 'Low';
+// Set only by CI when the PR merges, so a task can never be closed before its code lands.
+const CI_ONLY_STATUSES = ['Done'];
 
 // Field names on the project board. GitHub reserves "Type" (its built-in issue types),
 // so the Type field is called "Task Type" on the board. Labels still use type:*.
@@ -58,7 +71,8 @@ const PROJECT_FIELD = { Severity: 'Severity', Type: 'Task Type', Status: 'Status
 const LABEL_COLORS = {
   'severity:Low': '0e8a16', 'severity:Medium': 'fbca04', 'severity:High': 'd93f0b', 'severity:Critical': 'b60205',
   'type:Task': '1d76db', 'type:Issue': '5319e7', 'type:Bug': 'd73a4a',
-  'status:Open': 'c5def5', 'status:Pending': 'fef2c0', 'status:Testing': '0052cc', 'status:Closed': '6a737d',
+  'status:Todo': 'c5def5', 'status:In Progress': 'fbca04', 'status:In Review': '0052cc', 'status:Done': '0e8a16',
+  'status:Blocked': 'b60205',
 };
 
 // ---------- small helpers ----------
@@ -72,6 +86,10 @@ function git(...args) {
   } catch {
     return '';
   }
+}
+
+function gitStrict(...args) {
+  return execFileSync('git', args, { cwd: ROOT, encoding: 'utf8' }).trim();
 }
 
 function currentBranch() {
@@ -108,6 +126,7 @@ function pick(value, allowed, label) {
 const names = (field) => FIELDS[field].map((o) => o.name);
 
 // ---------- active task file ----------
+/** @param {{branch?: string}} [opts] */
 function loadActiveTask({ branch } = {}) {
   if (!fs.existsSync(TASK_FILE)) return null;
   const task = JSON.parse(fs.readFileSync(TASK_FILE, 'utf8'));
@@ -121,7 +140,7 @@ function saveActiveTask(task) {
   fs.writeFileSync(TASK_FILE, JSON.stringify(task, null, 2) + '\n');
 }
 
-/** "Open -> Testing -> Closed", from the task history with repeats collapsed. */
+/** "Todo -> In Progress", from the task history with repeats collapsed. */
 function lifecycle(task) {
   const steps = [];
   for (const h of task.history || []) if (steps[steps.length - 1] !== h.status) steps.push(h.status);
@@ -180,7 +199,7 @@ function ensureProject(repo) {
     project = getProject(d.createProjectV2.projectV2.id);
     graphql(
       `mutation($p: ID!, $d: String!) { updateProjectV2(input: { projectId: $p, shortDescription: $d }) { projectV2 { id } } }`,
-      { p: project.id, d: `Task lifecycle (Open -> Testing -> Closed) for ${repo.full} worktrees` }
+      { p: project.id, d: `Task lifecycle (Todo -> In Progress -> In Review -> Done) for ${repo.full} worktrees` }
     );
   } else {
     try {
@@ -259,8 +278,11 @@ function createTask(opts) {
   if (!opts.title || !String(opts.title).trim()) throw new Error('--title "<Task Name>" is required');
   const type = pick(opts.type, names('Type'), '--type');
   const severity = pick(opts.severity || DEFAULT_SEVERITY, names('Severity'), '--severity');
-  const status = pick(opts.status || 'Open', names('Status'), '--status');
-  const branch = currentBranch();
+  const branchType = opts.branchType || branches.TYPE_FOR_TASK[type];
+  if (!branches.BRANCH_TYPES.includes(branchType)) {
+    throw new Error(`--branch-type must be one of: ${branches.BRANCH_TYPES.join(', ')} (got "${branchType}")`);
+  }
+  const status = 'Todo';
   const now = new Date().toISOString();
 
   const task = {
@@ -273,7 +295,7 @@ function createTask(opts) {
     type,
     severity,
     status,
-    branch,
+    branch: currentBranch(),
     mode: 'dry-run',
     createdAt: now,
     history: [{ status, at: now }],
@@ -287,10 +309,9 @@ function createTask(opts) {
     ensureLabels(repo);
     const body = [
       `**Task Name:** ${task.taskName}`,
-      `**Type:** ${type} · **Severity:** ${severity} · **Status:** ${status}`,
-      `**Branch / worktree:** \`${branch}\``,
+      `**Type:** ${type} · **Severity:** ${severity}`,
       '',
-      'Tracked by `scripts/manage-project-task.js`. Lifecycle: Open -> Testing -> Closed.',
+      'Tracked by `scripts/manage-project-task.js`. Lifecycle: Todo -> In Progress -> In Review -> Done.',
       'This issue closes automatically when the PR with `Closes #<this issue>` is merged.',
     ].join('\n');
     const url = gh([
@@ -322,49 +343,87 @@ function createTask(opts) {
     }
   }
 
+  if (DRY_RUN || opts.noBranch) {
+    saveActiveTask(task);
+    say(`✅ Active task saved: qa-evidence/active-task.json (branch ${task.branch}, status ${status})`);
+    return task;
+  }
+
+  // Work starts on a branch named after the issue: the task moves to In Progress.
+  task.branch = startBranch(branchType, task);
   saveActiveTask(task);
-  say(`✅ Active task saved: qa-evidence/active-task.json (branch ${branch})`);
-  return task;
+  say(`✅ Branch ${task.branch} checked out`);
+  return setStatus('In Progress', { note: `Work started on branch \`${task.branch}\`.` }) || task;
+}
+
+/** Creates (or renames to) the convention branch <type>/<issue>-<slug> and returns its name. */
+function startBranch(branchType, task) {
+  const name = branches.buildBranch(branchType, task.issueNumber, task.taskName);
+  const current = currentBranch();
+  if (current === name) return name;
+  // A fresh worktree branch with no commits of its own is renamed, so no stray branch is left behind.
+  const ownCommits = git('rev-list', '--count', 'origin/main..HEAD');
+  if (!branches.EXEMPT.includes(current) && current !== 'HEAD' && ownCommits === '0') {
+    gitStrict('branch', '-m', name);
+  } else {
+    gitStrict('switch', '-c', name);
+  }
+  return name;
+}
+
+/** Sets Status on the board (if the issue is on it) and the status:* label, and comments on the issue. */
+function applyStatus(repo, issueNumber, status, { projectItemId = null, note = '', log = say } = {}) {
+  try {
+    const project = ensureProject(repo);
+    const itemId = projectItemId || findProjectItem(repo, issueNumber, project.id);
+    if (itemId) {
+      setItemField(project, itemId, 'Status', status);
+      log(`✅ Project board: #${issueNumber} Status -> ${status}`);
+    }
+  } catch (err) {
+    log(`⚠️  Project board update failed (labels still updated): ${err.message}`);
+  }
+  try {
+    const args = ['issue', 'edit', String(issueNumber), '-R', repo.full, '--add-label', `status:${status}`];
+    const current = JSON.parse(gh(['issue', 'view', String(issueNumber), '-R', repo.full, '--json', 'labels'])).labels;
+    for (const l of current) if (l.name.startsWith('status:') && l.name !== `status:${status}`) args.push('--remove-label', l.name);
+    gh(args);
+    gh(['issue', 'comment', String(issueNumber), '-R', repo.full, '--body', `**Status:** **${status}**` + (note ? `\n\n${note}` : '')]);
+    log(`✅ Issue #${issueNumber}: label status:${status}, comment added`);
+  } catch (err) {
+    log(`⚠️  Issue label/comment update failed: ${err.message}`);
+  }
+}
+
+function findProjectItem(repo, issueNumber, projectId) {
+  const d = graphql(
+    `query($o: String!, $n: String!, $i: Int!) { repository(owner: $o, name: $n) { issue(number: $i) {
+       projectItems(first: 20) { nodes { id project { id } } } } } }`,
+    { o: repo.owner, n: repo.name, i: issueNumber }
+  );
+  const item = d.repository.issue.projectItems.nodes.find((n) => n.project.id === projectId);
+  return item ? item.id : null;
 }
 
 /**
  * Moves the active task to a new status on the board, labels, issue comment and JSON.
  * Returns the updated task, or null if there is no active task for this branch.
+ * @param {string} newStatus
+ * @param {{note?: string, quiet?: boolean}} [opts]
  */
-function setStatus(newStatus, { note, closeIssue = false, quiet = false } = {}) {
+function setStatus(newStatus, { note = '', quiet = false } = {}) {
   const status = pick(newStatus, names('Status'), '--set');
   const task = loadActiveTask({ branch: currentBranch() });
   if (!task) {
     if (!quiet) say('No active task for this branch. Create one first: node scripts/manage-project-task.js create ...');
     return null;
   }
-  const previous = task.status;
   const log = quiet ? () => {} : say;
 
   if (!DRY_RUN && task.issueNumber) {
-    const repo = repoSlug();
-    try {
-      if (task.projectItemId) {
-        const project = ensureProject(repo);
-        setItemField(project, task.projectItemId, 'Status', status);
-        log(`✅ Project board: #${task.issueNumber} Status ${previous} -> ${status}`);
-      }
-    } catch (err) {
-      log(`⚠️  Project board update failed (labels still updated): ${err.message}`);
-    }
-    try {
-      const args = ['issue', 'edit', String(task.issueNumber), '-R', repo.full, '--add-label', `status:${status}`];
-      for (const s of names('Status')) if (s !== status) args.push('--remove-label', `status:${s}`);
-      gh(args);
-      const comment = `**Status:** ${previous} → **${status}**` + (note ? `\n\n${note}` : '');
-      gh(['issue', 'comment', String(task.issueNumber), '-R', repo.full, '--body', comment]);
-      if (closeIssue) gh(['issue', 'close', String(task.issueNumber), '-R', repo.full, '--reason', 'completed']);
-      log(`✅ Issue #${task.issueNumber}: label status:${status}, comment added${closeIssue ? ', issue closed' : ''}`);
-    } catch (err) {
-      log(`⚠️  Issue label/comment update failed: ${err.message}`);
-    }
+    applyStatus(repoSlug(), task.issueNumber, status, { projectItemId: task.projectItemId, note, log });
   } else if (DRY_RUN) {
-    log(`(dry run) Status ${previous} -> ${status} (GitHub skipped)`);
+    log(`(dry run) Status ${task.status} -> ${status} (GitHub skipped)`);
   }
 
   task.status = status;
@@ -392,10 +451,22 @@ function main() {
     if (command === 'setup') return setup();
     if (command === 'create') return void createTask(flags);
     if (command === 'status') {
-      if (!flags.set) throw new Error('status needs --set <Open|Pending|Testing|Closed>');
-      const t = setStatus(flags.set, { note: flags.note, closeIssue: Boolean(flags.closeIssue) });
+      if (!flags.set) throw new Error('status needs --set "<In Progress|In Review|Blocked>"');
+      if (CI_ONLY_STATUSES.includes(pick(flags.set, names('Status'), '--set'))) {
+        throw new Error('Done is set by CI when the PR merges (GitHub closes the issue via "Closes #N"). It cannot be set by hand.');
+      }
+      const t = setStatus(flags.set, { note: flags.note });
       if (!t) process.exit(1);
       return say(`✅ Task #${t.issueNumber} status: ${t.status}  (lifecycle: ${lifecycle(t)})`);
+    }
+    if (command === 'sync') {
+      const issue = Number(flags.issue);
+      if (!issue || !flags.set) throw new Error('sync needs --issue <N> --set <status>');
+      const status = pick(flags.set, names('Status'), '--set');
+      if (DRY_RUN) return say(`(dry run) #${issue} -> ${status}`);
+      const repo = repoSlug();
+      ensureLabels(repo);
+      return applyStatus(repo, issue, status, { note: flags.note === true ? '' : flags.note });
     }
     if (command === 'show') {
       const t = loadActiveTask({ branch: currentBranch() });

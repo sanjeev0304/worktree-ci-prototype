@@ -1,0 +1,48 @@
+name: Task Lifecycle
+
+# Moves the linked task through Todo -> In Progress -> In Review -> Done:
+#   PR opened / reopened / ready  -> In Review
+#   PR merged                     -> Done (GitHub itself closes the issue via "Closes #N")
+#   PR closed without merging     -> In Progress
+# The issue is taken from the branch name <type>/<issue-id>-<short-description>.
+#
+# Labels (status:*) use the built-in token. To also move the card on a user-owned
+# Projects board, add a PROJECT_TOKEN secret (classic PAT with "project" + "repo" scopes).
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, ready_for_review, closed]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  sync:
+    name: Sync task status
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Update the task status
+        env:
+          GH_TOKEN: ${{ secrets.PROJECT_TOKEN || github.token }}
+          HEAD_REF: ${{ github.head_ref }}
+          ACTION: ${{ github.event.action }}
+          MERGED: ${{ github.event.pull_request.merged }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          ISSUE="$(sed -nE 's#^[a-z]+/([0-9]+)-.*#\1#p' <<< "$HEAD_REF")"
+          if [ -z "$ISSUE" ]; then
+            echo "::warning::Branch $HEAD_REF has no issue id; nothing to sync."
+            exit 0
+          fi
+          if [ "$ACTION" = "closed" ] && [ "$MERGED" = "true" ]; then
+            STATUS="Done"; NOTE="PR #$PR merged. GitHub closed this issue via \`Closes #$ISSUE\`."
+          elif [ "$ACTION" = "closed" ]; then
+            STATUS="In Progress"; NOTE="PR #$PR was closed without merging."
+          else
+            STATUS="In Review"; NOTE="PR #$PR is open for review."
+          fi
+          node scripts/manage-project-task.js sync --issue "$ISSUE" --set "$STATUS" --note "$NOTE"

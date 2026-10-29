@@ -6,11 +6,16 @@
  * 2. Sends real POST requests to /api/calculate-invoice and times each with performance.now().
  * 3. Runs a browser check of the UI and saves qa-evidence/latest-ui-proof.png
  *    (Playwright → headless Chrome/Chromium → built-in PNG fallback).
- * 4. Writes qa-evidence/PR_AUDIT_REPORT.md, ready to paste into the PR description.
+ * 4. Writes qa-evidence/PR_AUDIT_REPORT.md, ready to use as the PR description.
+ *
+ * qa-evidence/ is git-ignored: evidence is never committed. The report goes into the PR
+ * body, and the CI gate re-runs this audit with --ci and uploads the screenshot as a
+ * GitHub Actions artifact (download it with: gh run download <run-id> -n qa-evidence).
  *
  * Usage:
  *   node scripts/run-pre-pr-audit.js
  *   node scripts/run-pre-pr-audit.js --manual-passed "Notes from the user's manual check"
+ *   node scripts/run-pre-pr-audit.js --ci     (CI: no local task file needed)
  *
  * Exit code 1 if the server can't start, the main API call fails, or no screenshot is produced.
  */
@@ -24,6 +29,7 @@ const { spawn, spawnSync, execSync } = require('child_process');
 const { performance } = require('perf_hooks');
 const { renderInvoiceSnapshot } = require('./lib/png-snapshot');
 const tasks = require('./manage-project-task');
+const branches = require('./lib/branch-name');
 
 const ROOT = path.resolve(__dirname, '..');
 const PORT = Number(process.env.PORT) || 3456;
@@ -51,8 +57,9 @@ function log(line) {
 
 // ---------- args ----------
 function parseArgs(argv) {
-  const args = { manualPassed: false, manualNotes: '' };
+  const args = { manualPassed: false, manualNotes: '', ci: false };
   for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '--ci') args.ci = true;
     if (argv[i] === '--manual-passed') {
       args.manualPassed = true;
       if (argv[i + 1] && !argv[i + 1].startsWith('--')) args.manualNotes = argv[++i];
@@ -73,7 +80,8 @@ function git(cmd) {
 function repoInfo() {
   const remote = git('remote get-url origin');
   const m = remote.match(/github\.com[:/]([^/]+)\/([^/.]+?)(?:\.git)?$/);
-  const branch = git('rev-parse --abbrev-ref HEAD') || 'main';
+  // On a PR, CI checks out a detached merge commit, so it passes the branch in AUDIT_BRANCH.
+  const branch = process.env.AUDIT_BRANCH || git('rev-parse --abbrev-ref HEAD') || 'main';
   return {
     slug: m ? `${m[1]}/${m[2]}` : null,
     branch,
@@ -201,6 +209,7 @@ function findChrome() {
 async function screenshotWithPlaywright(expectedTotal) {
   let playwright;
   try {
+    // @ts-ignore optional dependency, used only when installed
     playwright = require('playwright');
   } catch {
     log('Playwright not installed; trying headless Chrome.');
@@ -215,6 +224,7 @@ async function screenshotWithPlaywright(expectedTotal) {
     await page.fill('#amount', '1000');
     await page.click('#calculate');
     await page.waitForSelector('body[data-ready="true"]');
+    // eslint-disable-next-line no-undef -- runs inside the browser page
     await page.waitForFunction(() => document.getElementById('r-total').textContent !== '—');
     const shown = await page.textContent('#r-total');
     log(`UI: form submitted (VIP, 1000); dashboard shows total ${shown.trim()}.`);
@@ -324,13 +334,10 @@ function taskSection(task) {
 
 function buildReport({ info, results, shotMethod, args, generatedAt, task }) {
   const primary = results.find((r) => r.primary);
-  const imgUrl = info.slug
-    ? `https://github.com/${info.slug}/blob/${encodeURIComponent(info.branch)}/qa-evidence/latest-ui-proof.png?raw=true`
-    : 'qa-evidence/latest-ui-proof.png?raw=true';
 
   const out = [];
-  out.push('# 🧪 Pre-PR Audit Report', '');
-  out.push(...taskSection(task));
+  out.push(args.ci ? '# 🤖 CI Audit Evidence' : '# 🧪 Pre-PR Audit Report', '');
+  if (!args.ci) out.push(...taskSection(task));
   out.push('| | |', '|---|---|');
   out.push(`| **Branch** | \`${info.branch}\` |`);
   out.push(`| **Audited commit** | \`${info.commit}\`${info.dirty ? ' + uncommitted changes' : ''} |`);
@@ -377,11 +384,22 @@ function buildReport({ info, results, shotMethod, args, generatedAt, task }) {
 
   out.push('## 4. UI Screenshot Proof', '');
   if (shotMethod) {
-    out.push(`Captured with: **${shotMethod}**`, '', `![Enterprise Invoice Dashboard: latest UI proof](${imgUrl})`);
+    out.push(`Captured with: **${shotMethod}**`, '');
+    out.push(
+      args.ci
+        ? 'The screenshot and this report are attached to this workflow run as the **`qa-evidence`** artifact.'
+        : 'Saved locally as `qa-evidence/latest-ui-proof.png` (git-ignored, never committed). The CI gate re-captures it ' +
+            'and attaches it to the PR as the **`qa-evidence`** GitHub Actions artifact (`gh run download <run-id> -n qa-evidence`).'
+    );
   } else {
     out.push('❌ No screenshot captured.');
   }
   out.push('');
+
+  if (args.ci) {
+    out.push('---', '_Generated in CI by `scripts/run-pre-pr-audit.js --ci`._', '');
+    return out.join('\n');
+  }
 
   out.push('## 5. Manual Verification (Protocol RULE 3)', '');
   if (args.manualPassed) {
@@ -396,6 +414,7 @@ function buildReport({ info, results, shotMethod, args, generatedAt, task }) {
 
   out.push('## 6. Pre-PR Protocol Checklist', '');
   out.push(`- [${task ? 'x' : ' '}] RULE 0: GitHub Project task created before editing code${task ? ` (#${task.issueNumber})` : ''}`);
+  out.push(`- [${branches.parseBranch(info.branch) ? 'x' : ' '}] Branch follows \`<type>/<issue-id>-<short-description>\``);
   out.push('- [x] RULE 1: PR not opened straight after editing code');
   out.push(`- [x] RULE 2: Pre-PR audit run (API telemetry + screenshot)`);
   out.push(`- [${args.manualPassed ? 'x' : ' '}] RULE 3: Manual check on ${BASE_URL} confirmed by the user`);
@@ -413,14 +432,14 @@ async function main() {
   log(`Pre-PR audit started on branch ${info.branch} (${info.commit}).`);
   let server = null;
   let exitCode = 0;
-  let task = tasks.loadActiveTask({ branch: tasks.currentBranch() });
-  if (!task) {
+  // The audit never changes the task status: it stays In Progress until the PR opens (In Review)
+  // and is only Done when the PR merges. See scripts/manage-project-task.js.
+  const task = args.ci ? null : tasks.loadActiveTask({ branch: tasks.currentBranch() });
+  if (args.ci) {
+    log('CI mode: task status is managed by .github/workflows/task-lifecycle.yml.');
+  } else if (!task) {
     log('❌ No linked GitHub Project task for this branch. Run: node scripts/manage-project-task.js create ...');
     exitCode = 1;
-  } else if (task.status !== 'Testing' && !(args.manualPassed && task.status === 'Closed')) {
-    // Audit started: the task moves to Testing (also re-opens a Closed task if the code is re-audited).
-    task = tasks.setStatus('Testing', { quiet: true, note: 'Pre-PR audit started (`scripts/run-pre-pr-audit.js`).' }) || task;
-    log(`Task #${task.issueNumber} "${task.taskName}" moved to Testing on GitHub Projects.`);
   } else {
     log(`Task #${task.issueNumber} "${task.taskName}" is ${task.status}.`);
   }
@@ -434,14 +453,7 @@ async function main() {
     if (!shotMethod) exitCode = 1;
 
     if (args.manualPassed) {
-      log(`Manual check recorded as PASSED by ${info.author}.`);
-      if (task && task.status !== 'Closed') {
-        // Manually approved and ready for the PR: the task moves to Closed.
-        // The issue itself closes when the PR (whose body says "Closes #N") is merged.
-        const note = `Manual check passed. PR ready.${args.manualNotes ? `\n\n> ${args.manualNotes}` : ''}`;
-        task = tasks.setStatus('Closed', { quiet: true, note }) || task;
-        log(`Task #${task.issueNumber} moved to Closed on GitHub Projects (issue closes when the PR merges).`);
-      }
+      log(`Manual check recorded as PASSED by ${info.author}. Open the PR with this report as its body.`);
     }
     log(`Audit finished: ${exitCode === 0 ? 'evidence complete' : 'evidence INCOMPLETE'}.`);
 
@@ -449,8 +461,8 @@ async function main() {
     fs.writeFileSync(REPORT, buildReport({ info, results, shotMethod, args, generatedAt, task }));
     console.log(`\nReport written: qa-evidence/PR_AUDIT_REPORT.md`);
     if (primary.rule === 'FAIL') console.log('⚠️  RULE #404 is violated by the current code (see report section 2).');
-    if (!task) console.log('❌ No linked GitHub Project task: run node scripts/manage-project-task.js create ... then re-run the audit.');
-    if (!args.manualPassed) console.log('⏳ Manual check pending: test http://localhost:3456, then re-run with --manual-passed "<notes>".');
+    if (!task && !args.ci) console.log('❌ No linked GitHub Project task: run node scripts/manage-project-task.js create ... then re-run the audit.');
+    if (!args.manualPassed && !args.ci) console.log('⏳ Manual check pending: test http://localhost:3456, then re-run with --manual-passed "<notes>".');
   } catch (err) {
     log(`Audit failed: ${err.message}`);
     exitCode = 1;
