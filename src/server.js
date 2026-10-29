@@ -81,10 +81,11 @@ function renderPage() {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Enterprise Invoice Dashboard</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap">
 <style>
   :root { --bg:#f4f6fb; --card:#fff; --ink:#1b2333; --muted:#5b6578; --line:#e3e7ef; --accent:#2f5bea; --bad:#c62828; --good:#1b7f3b; }
   * { box-sizing: border-box; }
-  body { margin:0; font:15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background:var(--bg); color:var(--ink); }
+  body { margin:0; font:15px/1.5 "Inter", system-ui, sans-serif; background:var(--bg); color:var(--ink); }
   header { background:var(--ink); color:#fff; padding:18px 24px; }
   header h1 { margin:0; font-size:20px; }
   header p { margin:2px 0 0; color:#b8c1d6; font-size:13px; }
