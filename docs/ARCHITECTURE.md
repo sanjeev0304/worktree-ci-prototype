@@ -45,6 +45,7 @@ This enterprise invoicing application has **two layers** with strict ownership.
 
 - Starts the server if needed, times real API calls, captures a UI screenshot and
   writes `qa-evidence/PR_AUDIT_REPORT.md` (git-ignored; used as the PR body).
+  The report shows only the evidence the change needs (`scripts/lib/evidence-scope.js`).
   See Guardrail 4 in SAFETY_GUARDRAILS.md.
 
 ## Tests

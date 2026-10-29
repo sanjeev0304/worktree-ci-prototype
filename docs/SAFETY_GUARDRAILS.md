@@ -113,8 +113,13 @@ Every pull request must go through these four steps, in order.
 
 - **No evidence in Git:** `qa-evidence/` is git-ignored. CI re-runs the audit, uploads
   the screenshot and report as the `qa-evidence` GitHub Actions artifact
-  (`gh run download <run-id> -n qa-evidence`) and posts the telemetry as a PR comment.
+  (`gh run download <run-id> -n qa-evidence`) and posts the evidence as a PR comment.
   **CI** fails a PR that commits anything under `qa-evidence/`.
+- **Evidence fits the change** (`scripts/lib/evidence-scope.js`): a change to the page in
+  `renderPage()` gets a screenshot, shown inline in the PR comment (CI publishes it to the
+  never-merged `qa-evidence-images` branch); a calculation/API change gets the API flight
+  times and the RULE #404 table. The common checks (API calls, RULE #404, UI render) run on
+  every PR but are summarised in one line, with the details folded away.
 - **CI:** a PR whose body does not contain "Manual check passed" fails.
 
 ## Guardrail 5: AI code review (review layer 2, advisory)

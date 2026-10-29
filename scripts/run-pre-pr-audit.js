@@ -7,6 +7,9 @@
  * 3. Runs a browser check of the UI and saves qa-evidence/latest-ui-proof.png
  *    (Playwright → headless Chrome/Chromium → built-in PNG fallback).
  * 4. Writes qa-evidence/PR_AUDIT_REPORT.md, ready to use as the PR description.
+ *    It shows only the evidence this change needs (lib/evidence-scope.js): a screenshot for
+ *    UI changes, API flight times and RULE #404 for calculation/API changes. The common
+ *    checks always run but are summarised in one line, with the details folded away.
  *
  * qa-evidence/ is git-ignored: evidence is never committed. The report goes into the PR
  * body, and the CI gate re-runs this audit with --ci and uploads the screenshot as a
@@ -16,6 +19,9 @@
  *   node scripts/run-pre-pr-audit.js
  *   node scripts/run-pre-pr-audit.js --manual-passed "Notes from the user's manual check"
  *   node scripts/run-pre-pr-audit.js --ci     (CI: no local task file needed)
+ *
+ * Env: AUDIT_BASE (diff base; default: merge-base with origin/main) and EVIDENCE_IMAGE_URL
+ * (CI: where the screenshot is published, so the PR comment can show it inline).
  *
  * Exit code 1 if the server can't start, the main API call fails, or no screenshot is produced.
  */
@@ -30,6 +36,7 @@ const { performance } = require('perf_hooks');
 const { renderInvoiceSnapshot } = require('./lib/png-snapshot');
 const tasks = require('./manage-project-task');
 const branches = require('./lib/branch-name');
+const { scopeFromDiff, describeScope } = require('./lib/evidence-scope');
 
 const ROOT = path.resolve(__dirname, '..');
 const PORT = Number(process.env.PORT) || 3456;
@@ -37,6 +44,7 @@ const BASE_URL = `http://localhost:${PORT}`;
 const EVIDENCE_DIR = path.join(ROOT, 'qa-evidence');
 const SCREENSHOT = path.join(EVIDENCE_DIR, 'latest-ui-proof.png');
 const REPORT = path.join(EVIDENCE_DIR, 'PR_AUDIT_REPORT.md');
+const SCOPE_FILE = path.join(EVIDENCE_DIR, 'scope.json');
 
 // RULE #404 (docs/BUSINESS_RULES.md)
 const GST = 0.18;
@@ -49,6 +57,8 @@ const TEST_CASES = [
 ];
 
 const logs = [];
+/** Whether the total on the rendered page matched the API (null: not read). */
+let uiTotalMatches = null;
 function log(line) {
   const entry = `[${new Date().toISOString()}] ${line}`;
   logs.push(entry);
@@ -71,7 +81,9 @@ function parseArgs(argv) {
 // ---------- git info ----------
 function git(cmd) {
   try {
-    return execSync(`git ${cmd}`, { cwd: ROOT, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+    return execSync(`git ${cmd}`, { cwd: ROOT, stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 * 1024 * 1024 })
+      .toString()
+      .trim();
   } catch {
     return '';
   }
@@ -89,6 +101,23 @@ function repoInfo() {
     dirty: git('status --porcelain -- src tests scripts docs') !== '',
     author: git('config user.name') || os.userInfo().username,
   };
+}
+
+// ---------- what this PR changed ----------
+/** Evidence scope of this branch's changes (committed, uncommitted and new files) against main. */
+function changeScope() {
+  const base = process.env.AUDIT_BASE || git('merge-base origin/main HEAD');
+  if (!base) {
+    log('Could not find the diff base (origin/main); showing all evidence.');
+    return { ui: true, api: true, files: [] };
+  }
+  const untracked = git('ls-files --others --exclude-standard')
+    .split('\n')
+    .filter(Boolean)
+    .map((f) => `diff --git a/${f} b/${f}\n@@ -0,0 +1 @@`);
+  const scope = scopeFromDiff([git(`diff -U0 ${base}`), ...untracked].join('\n'));
+  log(`Changed files: ${scope.files.join(', ') || 'none'} → ${describeScope(scope)}.`);
+  return scope;
 }
 
 // ---------- HTTP helpers ----------
@@ -228,7 +257,8 @@ async function screenshotWithPlaywright(expectedTotal) {
     await page.waitForFunction(() => document.getElementById('r-total').textContent !== '—');
     const shown = await page.textContent('#r-total');
     log(`UI: form submitted (VIP, 1000); dashboard shows total ${shown.trim()}.`);
-    log(`UI: total matches API (${expectedTotal}): ${shown.replace(/[^\d.]/g, '') === expectedTotal.toFixed(2) ? 'yes' : 'NO'}`);
+    uiTotalMatches = shown.replace(/[^\d.]/g, '') === expectedTotal.toFixed(2);
+    log(`UI: total matches API (${expectedTotal}): ${uiTotalMatches ? 'yes' : 'NO'}`);
     await page.screenshot({ path: SCREENSHOT, fullPage: true });
     return 'Playwright (Chromium)';
   } finally {
@@ -264,7 +294,8 @@ function screenshotWithChrome(expectedTotal) {
     log(`UI: page loaded, form auto-submitted (VIP, 1000); ready=${ready}.`);
     if (total) {
       log(`UI: dashboard shows total ${total[1].trim()}.`);
-      log(`UI: total matches API (${expectedTotal}): ${total[1].replace(/[^\d.]/g, '') === expectedTotal.toFixed(2) ? 'yes' : 'NO'}`);
+      uiTotalMatches = total[1].replace(/[^\d.]/g, '') === expectedTotal.toFixed(2);
+      log(`UI: total matches API (${expectedTotal}): ${uiTotalMatches ? 'yes' : 'NO'}`);
     } else {
       log('UI: could not read the total from the rendered page.');
     }
@@ -332,76 +363,88 @@ function taskSection(task) {
   return out;
 }
 
-function buildReport({ info, results, shotMethod, args, generatedAt, task }) {
+function apiSection(results) {
+  const out = ['| # | Params Sent | Status | Flight Time (ms) | Response | Result |', '|---|---|---:|---:|---|---|'];
+  results.forEach((r, i) => {
+    const body = r.error ? `ERROR: ${r.error}` : r.json && r.json.invoice ? JSON.stringify(r.json.invoice) : r.raw;
+    const verdict = r.ok ? (r.rule === 'FAIL' ? '⚠️ RULE #404 FAIL' : '✅ OK') : `❌ expected ${r.expectStatus}`;
+    out.push(`| ${i + 1} | \`${cell(JSON.stringify(r.body))}\` | ${r.status || '—'} | ${r.ms.toFixed(2)} | \`${cell(body)}\` | ${verdict} |`);
+  });
+  const slowest = Math.max(...results.map((r) => r.ms));
+  out.push('', `\`POST /api/calculate-invoice\` · average **${average(results).toFixed(2)} ms** · slowest **${slowest.toFixed(2)} ms**`, '');
+  return out;
+}
+
+function ruleSection(primary) {
+  if (!primary || !primary.json || !primary.json.invoice) return ['❌ Could not check RULE #404: the primary API call failed.', ''];
+  const exp = expectedInvoice(primary.body);
+  const act = primary.json.invoice;
+  const out = ['VIP, amount 1000:', '', '| Field | Expected (18% GST, 10% VIP cap) | Actual | |', '|---|---:|---:|---|'];
+  for (const k of ['subtotal', 'discount', 'taxable', 'gst', 'total']) {
+    out.push(`| ${k} | ${exp[k].toFixed(2)} | ${act[k].toFixed(2)} | ${exp[k] === act[k] ? '✅' : '❌'} |`);
+  }
+  out.push('', primary.rule === 'PASS' ? '**RULE #404: ✅ COMPLIANT**' : '**RULE #404: ❌ VIOLATED**', '');
+  return out;
+}
+
+const average = (results) => results.reduce((a, r) => a + r.ms, 0) / results.length;
+
+/** One line for the checks every PR gets, whatever it changed. */
+function commonChecksLine(results, primary, shotMethod, args) {
+  const okCount = results.filter((r) => r.ok).length;
+  const api = `${okCount === results.length ? '✅' : '❌'} API: ${okCount}/${results.length} calls as expected (avg ${average(results).toFixed(2)} ms)`;
+  const rule = primary && primary.rule === 'PASS' ? '✅ RULE #404' : '❌ RULE #404';
+  const ui = !shotMethod ? '❌ UI: no screenshot' : uiTotalMatches === false ? '❌ UI total differs from API' : '✅ UI renders';
+  const tests = args.ci ? 'lint, typecheck and tests: **checks** job' : 'lint, typecheck and tests: `npm run check`';
+  return `${api} · ${rule} · ${ui} · ${tests}`;
+}
+
+function buildReport({ info, results, shotMethod, args, generatedAt, task, scope }) {
   const primary = results.find((r) => r.primary);
+  const imageUrl = process.env.EVIDENCE_IMAGE_URL;
 
   const out = [];
   out.push(args.ci ? '# 🤖 CI Audit Evidence' : '# 🧪 Pre-PR Audit Report', '');
   if (!args.ci) out.push(...taskSection(task));
-  out.push('| | |', '|---|---|');
-  out.push(`| **Branch** | \`${info.branch}\` |`);
-  out.push(`| **Audited commit** | \`${info.commit}\`${info.dirty ? ' + uncommitted changes' : ''} |`);
-  out.push(`| **Generated** | ${generatedAt} |`);
-  out.push(`| **Run by** | ${info.author} · Node ${process.version} · ${process.platform} |`);
-  out.push(`| **Target** | ${BASE_URL} |`, '');
+  out.push(
+    `**Branch** \`${info.branch}\` · **Commit** \`${info.commit}\`${info.dirty ? ' + uncommitted changes' : ''} · ` +
+      `**Generated** ${generatedAt} · ${info.author} · Node ${process.version} · ${process.platform}`,
+    ''
+  );
 
-  out.push('## 1. API Flight-Time Telemetry', '');
-  out.push('| # | Endpoint | Method | Params Sent | Status Code | Flight Time (ms) | Response Body | Result |');
-  out.push('|---|---|---|---|---:|---:|---|---|');
-  results.forEach((r, i) => {
-    const body = r.error ? `ERROR: ${r.error}` : r.json && r.json.invoice ? JSON.stringify(r.json.invoice) : r.raw;
-    const verdict = r.ok ? (r.rule === 'FAIL' ? '⚠️ RULE #404 FAIL' : '✅ OK') : `❌ expected ${r.expectStatus}`;
-    out.push(
-      `| ${i + 1} | \`/api/calculate-invoice\` | POST | \`${cell(JSON.stringify(r.body))}\` | ${r.status || '—'} | ` +
-        `${r.ms.toFixed(2)} | \`${cell(body)}\` | ${verdict} |`
-    );
-  });
-  const times = results.map((r) => r.ms);
-  out.push('', `Average flight time: **${(times.reduce((a, b) => a + b, 0) / times.length).toFixed(2)} ms** · ` +
-    `slowest: **${Math.max(...times).toFixed(2)} ms**`, '');
+  out.push('## What changed', '');
+  const files = scope.files.map((f) => `\`${f}\``);
+  out.push(`Files: ${files.length ? files.join(', ') : '_none_'}  `, `Evidence needed: **${describeScope(scope)}**`, '');
 
-  results.forEach((r, i) => {
-    out.push(`<details><summary>Full response #${i + 1}: ${r.name}</summary>`, '', '```json', r.raw || r.error || '', '```', '', '</details>');
-  });
-  out.push('');
-
-  out.push('## 2. Business Rule Check (RULE #404)', '');
-  if (primary && primary.json && primary.json.invoice) {
-    const exp = expectedInvoice(primary.body);
-    const act = primary.json.invoice;
-    out.push('Primary case: `{ customerType: "VIP", amount: 1000 }`', '');
-    out.push('| Field | Expected (18% GST, 10% VIP cap) | Actual | |', '|---|---:|---:|---|');
-    for (const k of ['subtotal', 'discount', 'taxable', 'gst', 'total']) {
-      out.push(`| ${k} | ${exp[k].toFixed(2)} | ${act[k].toFixed(2)} | ${exp[k] === act[k] ? '✅' : '❌'} |`);
-    }
-    out.push('', primary.rule === 'PASS' ? '**RULE #404: ✅ COMPLIANT**' : '**RULE #404: ❌ VIOLATED** — the app does not follow the business rules yet.');
-  } else {
-    out.push('❌ Could not check: primary API call failed.');
+  out.push('## Evidence for this change', '');
+  if (scope.ui) {
+    out.push('### 📸 Screenshot', '');
+    if (!shotMethod) out.push('❌ No screenshot captured.');
+    else if (imageUrl) out.push(`![Dashboard after this change](${imageUrl})`, '', `_Captured with ${shotMethod}._`);
+    else if (args.ci) out.push(`Captured with ${shotMethod}; it is in the **\`qa-evidence\`** artifact of this run.`);
+    else out.push(`Captured with ${shotMethod} as \`qa-evidence/latest-ui-proof.png\`. CI posts it inline in the evidence comment on the PR.`);
+    out.push('');
   }
-  out.push('');
-
-  out.push('## 3. Automated UI Test Logs', '', '```text', ...logs, '```', '');
-
-  out.push('## 4. UI Screenshot Proof', '');
-  if (shotMethod) {
-    out.push(`Captured with: **${shotMethod}**`, '');
-    out.push(
-      args.ci
-        ? 'The screenshot and this report are attached to this workflow run as the **`qa-evidence`** artifact.'
-        : 'Saved locally as `qa-evidence/latest-ui-proof.png` (git-ignored, never committed). The CI gate re-captures it ' +
-            'and attaches it to the PR as the **`qa-evidence`** GitHub Actions artifact (`gh run download <run-id> -n qa-evidence`).'
-    );
-  } else {
-    out.push('❌ No screenshot captured.');
+  if (scope.api) {
+    out.push('### ⏱️ API flight times', '', ...apiSection(results));
+    out.push('### 🧮 RULE #404', '', ...ruleSection(primary));
   }
-  out.push('');
+  if (!scope.ui && !scope.api) out.push('_This PR changes no app behaviour, so there is nothing app-specific to show._', '');
+
+  out.push('## Common checks (every PR)', '', commonChecksLine(results, primary, shotMethod, args), '');
+  out.push('<details><summary>Full details</summary>', '');
+  if (!scope.api) out.push('### API flight times', '', ...apiSection(results), '### RULE #404', '', ...ruleSection(primary));
+  results.forEach((r, i) => {
+    out.push(`<details><summary>Response #${i + 1}: ${r.name}</summary>`, '', '```json', r.raw || r.error || '', '```', '', '</details>');
+  });
+  out.push('', '### Audit log', '', '```text', ...logs, '```', '', '</details>', '');
 
   if (args.ci) {
     out.push('---', '_Generated in CI by `scripts/run-pre-pr-audit.js --ci`._', '');
     return out.join('\n');
   }
 
-  out.push('## 5. Manual Verification (Protocol RULE 3)', '');
+  out.push('## Manual Verification (Protocol RULE 3)', '');
   if (args.manualPassed) {
     out.push(`**✅ Manual check passed** — confirmed by ${info.author} on ${generatedAt}`, '');
     out.push('Observation notes:', '', `> ${args.manualNotes ? args.manualNotes.replace(/\n/g, '\n> ') : '_No notes given._'}`);
@@ -412,14 +455,14 @@ function buildReport({ info, results, shotMethod, args, generatedAt, task }) {
   }
   out.push('');
 
-  out.push('## 6. Pre-PR Protocol Checklist', '');
+  out.push('<details><summary>Pre-PR protocol checklist</summary>', '');
   out.push(`- [${task ? 'x' : ' '}] RULE 0: GitHub Project task created before editing code${task ? ` (#${task.issueNumber})` : ''}`);
   out.push(`- [${branches.parseBranch(info.branch) ? 'x' : ' '}] Branch follows \`<type>/<issue-id>-<short-description>\``);
   out.push('- [x] RULE 1: PR not opened straight after editing code');
   out.push(`- [x] RULE 2: Pre-PR audit run (API telemetry + screenshot)`);
   out.push(`- [${args.manualPassed ? 'x' : ' '}] RULE 3: Manual check on ${BASE_URL} confirmed by the user`);
   out.push('- [x] RULE 4: This report is the PR description (`gh pr create --body-file qa-evidence/PR_AUDIT_REPORT.md`)');
-  out.push('', '---', '_Generated by `scripts/run-pre-pr-audit.js`._', '');
+  out.push('', '</details>', '', '---', '_Generated by `scripts/run-pre-pr-audit.js`._', '');
   return out.join('\n');
 }
 
@@ -450,6 +493,8 @@ async function main() {
     if (!primary.ok) exitCode = 1;
 
     const shotMethod = await captureScreenshot(primary);
+    const scope = changeScope();
+    fs.writeFileSync(SCOPE_FILE, JSON.stringify(scope, null, 2));
     if (!shotMethod) exitCode = 1;
 
     if (args.manualPassed) {
@@ -458,9 +503,9 @@ async function main() {
     log(`Audit finished: ${exitCode === 0 ? 'evidence complete' : 'evidence INCOMPLETE'}.`);
 
     const generatedAt = new Date().toISOString();
-    fs.writeFileSync(REPORT, buildReport({ info, results, shotMethod, args, generatedAt, task }));
+    fs.writeFileSync(REPORT, buildReport({ info, results, shotMethod, args, generatedAt, task, scope }));
     console.log(`\nReport written: qa-evidence/PR_AUDIT_REPORT.md`);
-    if (primary.rule === 'FAIL') console.log('⚠️  RULE #404 is violated by the current code (see report section 2).');
+    if (primary.rule === 'FAIL') console.log('⚠️  RULE #404 is violated by the current code (see the RULE #404 table in the report).');
     if (!task && !args.ci) console.log('❌ No linked GitHub Project task: run node scripts/manage-project-task.js create ... then re-run the audit.');
     if (!args.manualPassed && !args.ci) console.log('⏳ Manual check pending: test http://localhost:3456, then re-run with --manual-passed "<notes>".');
   } catch (err) {
