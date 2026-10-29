@@ -9,8 +9,8 @@
 const core = require('./core-engine');
 
 // Rates used by calculateInvoice(). Must follow RULE #404 in docs/BUSINESS_RULES.md.
-const GST_RATE = 0.05; // BUG: GST must be 18% (0.18), not 5%
-const VIP_DISCOUNT = 0.5; // BUG: VIP discount must be capped at 10% (0.10), not 50%
+const GST_RATE = 0.18; // RULE #404: exactly 18%
+const VIP_DISCOUNT = 0.1; // RULE #404: capped at 10%
 
 function round2(n) {
   return Math.round(n * 100) / 100;
