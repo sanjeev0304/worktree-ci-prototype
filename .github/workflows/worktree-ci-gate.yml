@@ -43,15 +43,55 @@ jobs:
   audit-evidence:
     name: Audit evidence (artifact, not committed)
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # publish the screenshot to the qa-evidence-images branch
+      pull-requests: write
+    env:
+      # Screenshots live on an orphan branch that is never merged, so the PR comment can
+      # show them inline while qa-evidence/ stays out of every PR.
+      IMAGE_BRANCH: qa-evidence-images
+      IMAGE_PATH: pr-${{ github.event.pull_request.number }}/${{ github.event.pull_request.head.sha }}.png
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2 # HEAD^1 is main: the diff decides which evidence this PR needs
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Run the pre-PR audit (API flight times + UI screenshot)
+      - name: Run the pre-PR audit (evidence for what this PR changed)
         env:
           AUDIT_BRANCH: ${{ github.head_ref }}
+          AUDIT_BASE: HEAD^1
+          EVIDENCE_IMAGE_URL: ${{ github.event.pull_request.head.repo.full_name == github.repository && format('https://github.com/{0}/blob/{1}/{2}?raw=true', github.repository, env.IMAGE_BRANCH, env.IMAGE_PATH) || '' }}
         run: node scripts/run-pre-pr-audit.js --ci
+      - name: Publish the screenshot for the PR comment (UI changes only)
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          if [ "$(node -p "require('./qa-evidence/scope.json').ui")" != "true" ] || [ ! -f qa-evidence/latest-ui-proof.png ]; then
+            echo "No UI change in this PR: no screenshot to publish."; exit 0
+          fi
+          # Create the orphan branch on first use (a single README commit, no history from main).
+          if ! gh api "repos/$REPO/git/ref/heads/$IMAGE_BRANCH" > /dev/null 2>&1; then
+            tree="$(gh api "repos/$REPO/git/trees" -f 'tree[][path]=README.md' -f 'tree[][mode]=100644' -f 'tree[][type]=blob' \
+                     -f 'tree[][content]=PR screenshots posted by the Worktree CI Gate. Never merged.' --jq .sha)"
+            commit="$(gh api "repos/$REPO/git/commits" -f message="Start $IMAGE_BRANCH" -f tree="$tree" --jq .sha)"
+            gh api "repos/$REPO/git/refs" -f ref="refs/heads/$IMAGE_BRANCH" -f sha="$commit" > /dev/null || true
+          fi
+          base64 -w0 qa-evidence/latest-ui-proof.png > image.b64
+          for attempt in 1 2 3; do
+            sha="$(gh api "repos/$REPO/contents/$IMAGE_PATH?ref=$IMAGE_BRANCH" --jq .sha 2>/dev/null || true)"
+            if gh api -X PUT "repos/$REPO/contents/$IMAGE_PATH" -f message="Screenshot for PR #$PR" -f branch="$IMAGE_BRANCH" \
+                 -F content=@image.b64 ${sha:+-f sha="$sha"} > /dev/null; then
+              echo "Published $IMAGE_PATH to $IMAGE_BRANCH."; exit 0
+            fi
+            sleep $((attempt * 3)) # another PR pushed to the branch at the same moment: retry
+          done
+          echo "::warning::Could not publish the screenshot; it is still in the qa-evidence artifact."
       - name: Upload qa-evidence as a GitHub Actions artifact
         id: upload
         uses: actions/upload-artifact@v4
@@ -68,7 +108,7 @@ jobs:
         run: |
           {
             echo "<!-- ci-audit-evidence -->"
-            echo "📎 **Screenshot + report:** [qa-evidence artifact]($ARTIFACT_URL) · \`gh run download ${{ github.run_id }} -n qa-evidence\`"
+            echo "📎 **Report + screenshot download:** [qa-evidence artifact]($ARTIFACT_URL) · \`gh run download ${{ github.run_id }} -n qa-evidence\`"
             echo
             cat qa-evidence/PR_AUDIT_REPORT.md
           } > comment.md

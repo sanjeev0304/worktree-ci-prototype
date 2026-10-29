@@ -93,8 +93,10 @@ Do not skip or reorder them, even if the user asks for a quick PR.
 
 2. **RULE 2: Always run `node scripts/run-pre-pr-audit.js` first.**
    It logs API flight times, status codes and responses, checks RULE #404, and
-   captures `qa-evidence/latest-ui-proof.png`. Read the report and tell the user what
-   it found, including any RULE #404 failures.
+   captures `qa-evidence/latest-ui-proof.png`. The report leads with the evidence for
+   what changed (screenshot for UI changes, API flight times + RULE #404 for
+   calculation/API changes) and folds the common checks into one line. Read the report
+   and tell the user what it found, including any RULE #404 failures.
 
 3. **RULE 3: Start the server and PAUSE for a manual check.**
    - Start `node src/server.js` (in the background) so the app runs on http://localhost:3456.
@@ -107,8 +109,9 @@ Do not skip or reorder them, even if the user asks for a quick PR.
 4. **RULE 4: Use the audit report as the PR description.**
    Commit the code (not `qa-evidence/`), push the branch, then:
    `gh pr create --base main --title "<title>" --body-file qa-evidence/PR_AUDIT_REPORT.md`
-   The body carries the API flight-time logs, the manual check confirmation and
-   `Closes #<issue>`. CI then attaches the screenshot as an Actions artifact, moves the
+   The body carries the change's evidence, the manual check confirmation and
+   `Closes #<issue>`. CI then posts the evidence comment (screenshot inline for UI
+   changes) and uploads the `qa-evidence` Actions artifact, moves the
    task to In Review, and runs both review layers.
 
 ## Pull request review (two layers)
