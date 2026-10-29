@@ -23,6 +23,14 @@ node scripts/manage-project-task.js create --title "<Task Name>" --type "<Task|I
     Nothing closes a task before its PR merges, and `Done` cannot be set by hand.
   - `Deployed`: set by CI (`chatops-cicd.yml`) when a merged PR is released to prod
     with a `release: <name>` comment. Cannot be set by hand either.
+  - **One-time setup, or the board never leaves `In Progress`:** CI can only move cards
+    with a `PROJECT_TOKEN` repo secret (classic PAT, scopes `repo` + `project`). The
+    built-in `GITHUB_TOKEN` cannot see a user-owned Project, so without it only the
+    `status:*` label changes. Create the PAT on GitHub, then run `gh secret set PROJECT_TOKEN`.
+    Backup: in the board's **Workflows** menu, turn on **Item closed** and **Pull request
+    merged**, both set to Status `Done`.
+  - If the `Task Lifecycle` check is red, the board was not updated. After fixing the
+    token, backfill: `node scripts/manage-project-task.js sync --issue <N> --set Done`.
   - `Blocked`: set by hand if the work is on hold:
     `node scripts/manage-project-task.js status --set Blocked --note "<why>"`.
 
@@ -153,6 +161,8 @@ node scripts/manage-project-task.js create --title "..." --type Bug --severity L
 node scripts/manage-project-task.js status --set Blocked --note "..."   # manual status change
 node scripts/manage-project-task.js show    # show the active task for this branch
 node scripts/manage-project-task.js setup   # (re)create the project board, fields and labels
+gh secret set PROJECT_TOKEN                 # once per repo: lets CI move board cards (PAT: repo + project)
+node scripts/manage-project-task.js sync --issue 12 --set Done   # backfill a merged task the board missed
 npm run check                               # lint + typecheck + unit + e2e + smoke
 node src/server.js                          # run the app on http://localhost:3456
 node scripts/run-pre-pr-audit.js            # RULE 2: API telemetry + UI screenshot + report

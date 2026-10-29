@@ -23,7 +23,9 @@
  *   create --title "<Task Name>" --type <Task|Issue|Bug> [--severity <Low|Medium|High|Critical>]
  *          [--branch-type <feat|fix|chore|docs|refactor|test|ci|perf|hotfix>] [--no-branch]
  *   status --set <In Progress|Blocked|In Review> [--note "<text>"]
- *   sync --issue <N> --set <status> [--note "<text>"]   used by CI (no active task file needed)
+ *   sync --issue <N> --set <status> [--note "<text>"]   used by CI (no active task file needed);
+ *          never creates the board, exits 1 if the board could not be updated. Also backfills
+ *          tasks whose PR merged before PROJECT_TOKEN was set.
  *   show                                    print the active task
  *
  * The active task is saved in qa-evidence/active-task.json (git-ignored, tied to the branch).
@@ -374,28 +376,45 @@ function startBranch(branchType, task) {
   return name;
 }
 
-/** Sets Status on the board (if the issue is on it) and the status:* label, and comments on the issue. */
-function applyStatus(repo, issueNumber, status, { projectItemId = null, note = '', log = say } = {}) {
+/**
+ * Sets Status on the board (if the issue is on it) and the status:* label, and comments on the issue.
+ * Returns false if the board could not be updated, so CI can fail loudly instead of silently.
+ * With findOnly the board is never created: in CI a missing board means the token cannot see it.
+ */
+function applyStatus(repo, issueNumber, status, { projectItemId = null, note = '', log = say, findOnly = false } = {}) {
+  let boardOk = true;
   try {
-    const project = ensureProject(repo);
+    const project = findOnly ? findProject(repo, ownerInfo(repo).ownerType) : ensureProject(repo);
+    if (!project) {
+      throw new Error(`"${PROJECT_TITLE}" is not visible to this token. The built-in GITHUB_TOKEN cannot reach ` +
+        'user-owned Projects: add a PROJECT_TOKEN repo secret (classic PAT, "repo" + "project" scopes).');
+    }
     const itemId = projectItemId || findProjectItem(repo, issueNumber, project.id);
     if (itemId) {
       setItemField(project, itemId, 'Status', status);
       log(`✅ Project board: #${issueNumber} Status -> ${status}`);
+    } else {
+      log(`⚠️  Issue #${issueNumber} is not on the project board; Status not set.`);
     }
   } catch (err) {
+    boardOk = false;
     log(`⚠️  Project board update failed (labels still updated): ${err.message}`);
   }
   try {
-    const args = ['issue', 'edit', String(issueNumber), '-R', repo.full, '--add-label', `status:${status}`];
     const current = JSON.parse(gh(['issue', 'view', String(issueNumber), '-R', repo.full, '--json', 'labels'])).labels;
-    for (const l of current) if (l.name.startsWith('status:') && l.name !== `status:${status}`) args.push('--remove-label', l.name);
+    if (current.some((l) => l.name === `status:${status}`)) {
+      log(`✅ Issue #${issueNumber}: already labeled status:${status}`);
+      return boardOk;
+    }
+    const args = ['issue', 'edit', String(issueNumber), '-R', repo.full, '--add-label', `status:${status}`];
+    for (const l of current) if (l.name.startsWith('status:')) args.push('--remove-label', l.name);
     gh(args);
     gh(['issue', 'comment', String(issueNumber), '-R', repo.full, '--body', `**Status:** **${status}**` + (note ? `\n\n${note}` : '')]);
     log(`✅ Issue #${issueNumber}: label status:${status}, comment added`);
   } catch (err) {
     log(`⚠️  Issue label/comment update failed: ${err.message}`);
   }
+  return boardOk;
 }
 
 function findProjectItem(repo, issueNumber, projectId) {
@@ -469,7 +488,9 @@ function main() {
       if (DRY_RUN) return say(`(dry run) #${issue} -> ${status}`);
       const repo = repoSlug();
       ensureLabels(repo);
-      return applyStatus(repo, issue, status, { note: flags.note === true ? '' : flags.note });
+      const ok = applyStatus(repo, issue, status, { note: flags.note === true ? '' : flags.note, findOnly: true });
+      if (!ok) process.exit(1);
+      return;
     }
     if (command === 'show') {
       const t = loadActiveTask({ branch: currentBranch() });

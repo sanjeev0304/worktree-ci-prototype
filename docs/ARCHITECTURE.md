@@ -78,4 +78,4 @@ This enterprise invoicing application has **two layers** with strict ownership.
 - `.github/workflows/chatops-cicd.yml`: ChatOps deploys to GitHub Pages (`dev/<taskId>/`, `qa/`,
   `pre-prod/`, `prod/`) via `scripts/build-gh-pages.js`; the release step moves the task to Deployed.
 - `.github/workflows/task-lifecycle.yml`: moves the task to In Review on PR open and to
-  Done on merge.
+  Done on merge. Needs the `PROJECT_TOKEN` secret to move the board card; fails if it cannot.

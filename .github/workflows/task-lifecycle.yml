@@ -6,8 +6,10 @@ name: Task Lifecycle
 #   PR closed without merging     -> In Progress
 # The issue is taken from the branch name <type>/<issue-id>-<short-description>.
 #
-# Labels (status:*) use the built-in token. To also move the card on a user-owned
-# Projects board, add a PROJECT_TOKEN secret (classic PAT with "project" + "repo" scopes).
+# REQUIRED: a PROJECT_TOKEN repo secret (classic PAT with "repo" + "project" scopes).
+# The built-in GITHUB_TOKEN cannot see a user-owned Projects board, so without the
+# secret only the status:* label changes and the board card stays where it was.
+# This job fails (red) whenever the board could not be updated, so that never goes unnoticed.
 
 on:
   pull_request:
@@ -31,8 +33,12 @@ jobs:
           ACTION: ${{ github.event.action }}
           MERGED: ${{ github.event.pull_request.merged }}
           PR: ${{ github.event.pull_request.number }}
+          HAS_PROJECT_TOKEN: ${{ secrets.PROJECT_TOKEN != '' }}
         run: |
           set -euo pipefail
+          if [ "$HAS_PROJECT_TOKEN" != "true" ]; then
+            echo "::error::PROJECT_TOKEN secret is missing, so the project board cannot be updated. Add it: gh secret set PROJECT_TOKEN"
+          fi
           ISSUE="$(sed -nE 's#^[a-z]+/([0-9]+)-.*#\1#p' <<< "$HEAD_REF")"
           if [ -z "$ISSUE" ]; then
             echo "::warning::Branch $HEAD_REF has no issue id; nothing to sync."
