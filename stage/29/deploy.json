@@ -1,0 +1,10 @@
+{
+  "env": "stage",
+  "version": "70fc0aa",
+  "commit": "70fc0aa77ce1fa934b12d8b9bd9908d49d3f27f4",
+  "task": "29",
+  "branch": "fix/29-pages-build-must-use-the-app-s-ui-styles",
+  "taskStatus": "In Review",
+  "deployedAt": "2026-10-30T13:43:12.361Z",
+  "url": "https://sanjeev0304.github.io/worktree-ci-prototype/stage/29/"
+}
