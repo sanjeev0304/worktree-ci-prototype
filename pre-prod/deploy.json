@@ -1,10 +1,10 @@
 {
   "env": "pre-prod",
-  "version": "qa@329aedf",
-  "commit": "329aedfa9574c94fa9610ac0cb29948482078ea0",
-  "task": "23",
-  "branch": "qa",
+  "version": "qa@ad8349d",
+  "commit": "ad8349d97472110cb1758c503583bd4051518cca",
+  "task": "24",
+  "branch": "fix/24-skip-gh-pages-in-post-checkout-hook",
   "taskStatus": "Done",
-  "deployedAt": "2026-10-30T13:02:45.764Z",
+  "deployedAt": "2026-10-30T13:18:29.162Z",
   "url": "https://sanjeev0304.github.io/worktree-ci-prototype/pre-prod/"
 }
