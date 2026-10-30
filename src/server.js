@@ -83,26 +83,37 @@ function renderPage() {
 <title>Enterprise Invoice Dashboard</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap">
 <style>
-  :root { --bg:#f4f6fb; --card:#fff; --ink:#1b2333; --muted:#5b6578; --line:#e3e7ef; --accent:#2f5bea; --bad:#c62828; --good:#1b7f3b; }
+  :root { --bg:#eef1fb; --card:#fff; --ink:#1b2333; --muted:#5b6578; --line:#e3e7ef; --accent:#4f46e5; --accent-2:#7c3aed;
+    --bad:#c62828; --bad-bg:#fdecec; --good:#1b7f3b; --good-bg:#e6f6ec; --warn:#b45309; }
   * { box-sizing: border-box; }
-  body { margin:0; font:15px/1.5 "Inter", system-ui, sans-serif; background:var(--bg); color:var(--ink); }
-  header { background:var(--ink); color:#fff; padding:18px 24px; }
-  header h1 { margin:0; font-size:20px; }
-  header p { margin:2px 0 0; color:#b8c1d6; font-size:13px; }
-  main { max-width:760px; margin:24px auto; padding:0 16px; display:grid; gap:16px; }
-  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:20px; }
-  .card h2 { margin:0 0 12px; font-size:16px; }
+  body { margin:0; font:15px/1.5 "Inter", system-ui, sans-serif; color:var(--ink);
+    background:radial-gradient(circle at top right, #e0e7ff, transparent 45%), var(--bg); min-height:100vh; }
+  header { background:linear-gradient(120deg, #1e1b4b, var(--accent) 60%, var(--accent-2)); color:#fff; padding:28px 24px;
+    box-shadow:0 4px 18px rgba(79,70,229,.25); }
+  header h1 { margin:0; font-size:22px; letter-spacing:-.01em; }
+  header p { margin:4px 0 0; color:#c7d2fe; font-size:13px; }
+  main { max-width:760px; margin:28px auto; padding:0 16px; display:grid; gap:20px; }
+  .card { background:var(--card); border:1px solid var(--line); border-top:4px solid var(--accent); border-radius:12px;
+    padding:22px; box-shadow:0 6px 20px rgba(27,35,51,.06); }
+  #result-card { border-top-color:var(--accent-2); }
+  .card h2 { margin:0 0 14px; font-size:16px; color:var(--accent); }
   form { display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end; }
-  label { display:grid; gap:4px; font-size:13px; color:var(--muted); }
-  select, input { font:inherit; padding:8px 10px; border:1px solid var(--line); border-radius:6px; min-width:160px; }
-  button { font:inherit; padding:9px 18px; background:var(--accent); color:#fff; border:0; border-radius:6px; cursor:pointer; }
+  label { display:grid; gap:4px; font-size:13px; font-weight:600; color:var(--muted); }
+  select, input { font:inherit; padding:9px 11px; border:1px solid var(--line); border-radius:8px; min-width:160px; background:#f9fafe; }
+  select:focus, input:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px rgba(79,70,229,.18); background:#fff; }
+  button { font:inherit; font-weight:600; padding:10px 22px; background:linear-gradient(120deg, var(--accent), var(--accent-2));
+    color:#fff; border:0; border-radius:8px; cursor:pointer; box-shadow:0 4px 12px rgba(79,70,229,.3); transition:transform .1s, box-shadow .1s; }
+  button:hover { transform:translateY(-1px); box-shadow:0 6px 16px rgba(79,70,229,.4); }
   table { width:100%; border-collapse:collapse; }
-  td { padding:8px 0; border-bottom:1px solid var(--line); }
+  td { padding:10px 12px; border-bottom:1px solid var(--line); }
+  td:first-child { color:var(--muted); }
   td:last-child { text-align:right; font-variant-numeric:tabular-nums; }
-  tr.total td { font-weight:700; font-size:17px; border-bottom:0; }
-  .rule { font-size:13px; color:var(--muted); }
-  .status { font-weight:600; }
-  .status.bad { color:var(--bad); } .status.good { color:var(--good); }
+  #r-discount { color:var(--good); } #r-gst { color:var(--warn); }
+  tr.total td { font-weight:700; font-size:18px; border-bottom:0; color:#fff; background:var(--accent); }
+  tr.total td:first-child { border-radius:8px 0 0 8px; } tr.total td:last-child { border-radius:0 8px 8px 0; }
+  .rule { font-size:13px; color:var(--muted); margin:16px 0 0; }
+  .status { font-weight:600; padding:2px 10px; border-radius:999px; margin-left:6px; }
+  .status.bad { color:var(--bad); background:var(--bad-bg); } .status.good { color:var(--good); background:var(--good-bg); }
   footer { text-align:center; color:var(--muted); font-size:12px; padding-bottom:24px; }
 </style>
 </head>
