@@ -172,6 +172,27 @@ tr.total td { font-weight:700; font-size:17px; border-bottom:0; }
 footer { text-align:center; color:var(--muted); font-size:12px; padding-bottom:24px; }
 `;
 
+// Rules for the parts only the static build has (environment bar, links, portal text).
+const BUILD_ONLY_STYLES = STYLES.split('\n')
+  .filter((line) => /^(a |\.env-(bar|badge)|\.rule, \.muted)/.test(line))
+  .join('\n');
+
+/**
+ * The page CSS from renderPage() in <srcDir>/server.js, read as text (never run), so a
+ * deploy shows the same UI as the app. Falls back to STYLES if it cannot be found.
+ */
+function appStyles(srcDir) {
+  let server;
+  try {
+    server = fs.readFileSync(path.join(srcDir, 'server.js'), 'utf8');
+  } catch {
+    return STYLES;
+  }
+  const match = server.match(/<style>\n([\s\S]*?)<\/style>/);
+  if (!match || match[1].includes('${')) return STYLES;
+  return match[1].replace(/^ {2}/gm, '') + BUILD_ONLY_STYLES + '\n';
+}
+
 function head(title, cssHref) {
   return `<!doctype html>
 <html lang="en">
@@ -350,7 +371,8 @@ function build(opts) {
   if (!opts.version) throw new Error('--version <tagOrCommit> is required');
   if (path.isAbsolute(subpath) || subpath.split(/[\\/]/).includes('..')) throw new Error('--subpath must stay inside --out');
 
-  const source = fs.readFileSync(path.join(opts.src || path.join(ROOT, 'src'), 'invoice-dashboard.js'), 'utf8');
+  const srcDir = opts.src || path.join(ROOT, 'src');
+  const source = fs.readFileSync(path.join(srcDir, 'invoice-dashboard.js'), 'utf8');
   const meta = {
     env,
     version: String(opts.version),
@@ -366,7 +388,7 @@ function build(opts) {
   fs.rmSync(dir, { recursive: true, force: true });
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'index.html'), renderApp(meta, repo));
-  fs.writeFileSync(path.join(dir, 'styles.css'), STYLES);
+  fs.writeFileSync(path.join(dir, 'styles.css'), appStyles(srcDir));
   fs.writeFileSync(path.join(dir, 'app.js'), bundle(source));
   fs.writeFileSync(path.join(dir, 'deploy.json'), JSON.stringify(meta, null, 2) + '\n');
   if (env === 'stage') {
@@ -395,7 +417,7 @@ function parseFlags(argv) {
   return flags;
 }
 
-module.exports = { build, init, writePortal, bundle, subpathFor, stageKey, pagesUrl, ENVS };
+module.exports = { build, init, writePortal, bundle, appStyles, subpathFor, stageKey, pagesUrl, ENVS };
 
 if (require.main === module) {
   try {
