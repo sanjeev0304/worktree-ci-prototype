@@ -16,11 +16,13 @@ node scripts/manage-project-task.js create --title "<Task Name>" --type "<Task|I
   `<type>/<issue-id>-<short-description>` (e.g. `fix/104-login-timeout`) and moves the
   task to **In Progress**. Use `--branch-type <feat|fix|chore|docs|refactor|test|ci|perf|hotfix>`
   to override the default (`Bug`/`Issue` → `fix`, `Task` → `feat`).
-- **Status lifecycle: `Todo → In Progress → In Review → Done`**
+- **Status lifecycle: `Todo → In Progress → In Review → Done → Deployed`**
   - `Todo`: issue created. `In Progress`: branch created (both by `create`).
   - `In Review`: set by CI (`.github/workflows/task-lifecycle.yml`) when the PR opens.
   - `Done`: set by CI when the PR **merges**; GitHub closes the issue via `Closes #<issue>`.
     Nothing closes a task before its PR merges, and `Done` cannot be set by hand.
+  - `Deployed`: set by CI (`chatops-cicd.yml`) when a merged PR is released to prod
+    with a `release: <name>` comment. Cannot be set by hand either.
   - `Blocked`: set by hand if the work is on hold:
     `node scripts/manage-project-task.js status --set Blocked --note "<why>"`.
 
@@ -123,6 +125,25 @@ Do not skip or reorder them, even if the user asks for a quick PR.
 2. **Claude code review, advisory** (`.github/workflows/claude-code-review.yml`):
    inline review comments on every PR. Needs the `ANTHROPIC_API_KEY` repo secret.
 
+## 🌐 Environments (Phase 4: ChatOps on GitHub Pages)
+
+One `main` branch, four environments on the `gh-pages` branch, driven by PR comments
+(`.github/workflows/chatops-cicd.yml`, built by `scripts/build-gh-pages.js`):
+
+| Command / event | Environment | URL |
+|---|---|---|
+| Comment `deploy: true` or `deploy: test` on an open PR | DEV | `https://sanjeev0304.github.io/worktree-ci-prototype/dev/<taskId>/` |
+| Comment `deploy: <tag>` on an **approved** PR (or approve a PR that has one) | QA, tags the PR head | `.../qa/` |
+| PR merged to `main` | PRE-PROD | `.../pre-prod/` |
+| Comment `release: <name>` on a **merged** PR | PROD, GitHub Release, task `Deployed` | `.../prod/` |
+
+- The portal at `https://sanjeev0304.github.io/worktree-ci-prototype/` lists every live environment.
+- Only the repo owner, members and collaborators can run these commands.
+- QA needs an approving review on the PR's latest commit. GitHub blocks approving your own
+  PR, so a `deploy: <tag>` from the repo **owner** is accepted as a logged self-check.
+- Each deploy rewrites only its own folder, plus the portal. Nothing is ever built from
+  a PR's scripts: the builder runs from `main` and reads the PR's `src/` as data.
+
 ## Commands
 
 ```bash
@@ -136,4 +157,5 @@ npm run check                               # lint + typecheck + unit + e2e + sm
 node src/server.js                          # run the app on http://localhost:3456
 node scripts/run-pre-pr-audit.js            # RULE 2: API telemetry + UI screenshot + report
 node scripts/run-pre-pr-audit.js --manual-passed "notes"   # RULE 3: record the user's manual check
+node scripts/build-gh-pages.js --env dev --task 22 --version local   # preview a Pages build in gh-pages-build/
 ```

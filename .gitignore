@@ -10,3 +10,6 @@ qa-evidence/
 
 # macOS system files
 .DS_Store
+
+# Local output of scripts/build-gh-pages.js (CI builds into a gh-pages checkout)
+gh-pages-build/

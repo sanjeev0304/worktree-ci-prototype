@@ -21,6 +21,7 @@ GitHub Project (fields: Task Name, Severity, Type, Status), mirrored as `severit
 | Branch `<type>/<issue-id>-<short-description>` created | `In Progress` | `manage-project-task.js create` |
 | Pull request opened | `In Review` | CI: `task-lifecycle.yml` |
 | Pull request **merged** | `Done` | CI: `task-lifecycle.yml`; GitHub closes the issue via `Closes #<issue>` |
+| `release: <name>` comment on the merged PR | `Deployed` | CI: `chatops-cicd.yml` (GitHub Release + `prod/`) |
 | PR closed without merging | `In Progress` | CI: `task-lifecycle.yml` |
 | Work on hold | `Blocked` | `manage-project-task.js status --set Blocked` |
 
@@ -129,6 +130,18 @@ Every pull request must go through these four steps, in order.
   security issues, and weakened gates.
 - It is advisory: it never blocks a merge. Layer 1 is the gate.
 - Needs the `ANTHROPIC_API_KEY` repository secret; without it the job skips with a notice.
+
+## Guardrail 6: environment deploys (ChatOps)
+
+- `.github/workflows/chatops-cicd.yml` deploys to GitHub Pages: `dev/<taskId>/`
+  (`deploy: true|test`), `qa/` (`deploy: <tag>` on an approved PR), `pre-prod/`
+  (merge to `main`) and `prod/` (`release: <name>` on a merged PR).
+- Commands are accepted only from the repo owner, members and collaborators.
+- QA needs an approving review on the PR's latest commit; a repo owner's command without
+  one is accepted as a self-check and logged as such in the run and the PR comment.
+- PROD only releases a **merged** PR, from its merge commit on `main`.
+- The workflow never runs code from the PR: the builder and scripts come from `main`, and
+  the PR's `src/` is extracted with `git archive` and only read as text.
 
 ## For Claude in any worktree
 

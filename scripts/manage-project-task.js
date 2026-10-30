@@ -6,15 +6,16 @@
  * "Enterprise Worktree Task Tracker" project board, with these fields:
  *   Task Name (Title) · Severity (Low*, Medium, High, Critical)
  *   Type (Task, Issue, Bug; shown as "Task Type" on the board, since GitHub reserves "Type")
- *   Status (Todo, In Progress, In Review, Done, Blocked)
+ *   Status (Todo, In Progress, In Review, Done, Deployed, Blocked)
  * Repository labels (severity:*, type:*, status:*) mirror the same values, so the task
  * is still tracked if the Projects API is unavailable.
  *
- * Lifecycle: Todo -> In Progress -> In Review -> Done
+ * Lifecycle: Todo -> In Progress -> In Review -> Done -> Deployed
  *   Todo         issue created                       (create)
  *   In Progress  branch <type>/<issue>-<slug> created (create, right after the issue)
  *   In Review    pull request opened                 (CI: .github/workflows/task-lifecycle.yml)
  *   Done         PR merged; GitHub closes the issue via "Closes #N" (CI, same workflow)
+ *   Deployed     released to prod with "release: <name>" (CI: .github/workflows/chatops-cicd.yml)
  *   Blocked      work on hold                        (status --set Blocked)
  *
  * Commands:
@@ -57,12 +58,13 @@ const FIELDS = {
     { name: 'In Progress', color: 'YELLOW', description: 'Branch created, work under way' },
     { name: 'In Review', color: 'BLUE', description: 'Pull request open' },
     { name: 'Done', color: 'GREEN', description: 'PR merged, issue closed by GitHub' },
+    { name: 'Deployed', color: 'PINK', description: 'Released to prod (release: <name>)' },
     { name: 'Blocked', color: 'RED', description: 'Work on hold' },
   ],
 };
 const DEFAULT_SEVERITY = 'Low';
-// Set only by CI when the PR merges, so a task can never be closed before its code lands.
-const CI_ONLY_STATUSES = ['Done'];
+// Set only by CI: Done when the PR merges, Deployed when it is released to prod.
+const CI_ONLY_STATUSES = ['Done', 'Deployed'];
 
 // Field names on the project board. GitHub reserves "Type" (its built-in issue types),
 // so the Type field is called "Task Type" on the board. Labels still use type:*.
@@ -72,6 +74,7 @@ const LABEL_COLORS = {
   'severity:Low': '0e8a16', 'severity:Medium': 'fbca04', 'severity:High': 'd93f0b', 'severity:Critical': 'b60205',
   'type:Task': '1d76db', 'type:Issue': '5319e7', 'type:Bug': 'd73a4a',
   'status:Todo': 'c5def5', 'status:In Progress': 'fbca04', 'status:In Review': '0052cc', 'status:Done': '0e8a16',
+  'status:Deployed': 'd4c5f9',
   'status:Blocked': 'b60205',
 };
 
@@ -453,7 +456,7 @@ function main() {
     if (command === 'status') {
       if (!flags.set) throw new Error('status needs --set "<In Progress|In Review|Blocked>"');
       if (CI_ONLY_STATUSES.includes(pick(flags.set, names('Status'), '--set'))) {
-        throw new Error('Done is set by CI when the PR merges (GitHub closes the issue via "Closes #N"). It cannot be set by hand.');
+        throw new Error('Done (PR merged) and Deployed (released to prod) are set by CI. They cannot be set by hand.');
       }
       const t = setStatus(flags.set, { note: flags.note });
       if (!t) process.exit(1);

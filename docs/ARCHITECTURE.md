@@ -48,6 +48,14 @@ This enterprise invoicing application has **two layers** with strict ownership.
   The report shows only the evidence the change needs (`scripts/lib/evidence-scope.js`).
   See Guardrail 4 in SAFETY_GUARDRAILS.md.
 
+## GitHub Pages builder: `scripts/build-gh-pages.js`
+
+- Builds one environment (`dev/<taskId>/`, `qa/`, `pre-prod/`, `prod/`) of the static
+  calculator into a `gh-pages` checkout, then regenerates the root Environment Portal.
+- Bundles `src/invoice-dashboard.js` verbatim, so the page runs the real RULE #404 math.
+  The core layer (auth, sessions, database) is never shipped to the public site: the
+  bundle gets a stub `./core-engine`.
+
 ## Tests
 
 - `tests/unit/`: unit tests (`node --test`) for the invoice math and branch names.
@@ -67,5 +75,7 @@ This enterprise invoicing application has **two layers** with strict ownership.
   smoke tests; the audit evidence artifact; and the safety gate (core ownership, app-code
   diff size, branch name, linked open issue, manual check).
 - `.github/workflows/claude-code-review.yml` (advisory): Claude reviews every PR.
+- `.github/workflows/chatops-cicd.yml`: ChatOps deploys to GitHub Pages (`dev/<taskId>/`, `qa/`,
+  `pre-prod/`, `prod/`) via `scripts/build-gh-pages.js`; the release step moves the task to Deployed.
 - `.github/workflows/task-lifecycle.yml`: moves the task to In Review on PR open and to
   Done on merge.
