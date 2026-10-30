@@ -1,0 +1,10 @@
+{
+  "env": "stage",
+  "version": "313139b",
+  "commit": "313139b2da7b6e5be4e290d135150d784e0b8add",
+  "task": "24",
+  "branch": "fix/24-skip-gh-pages-in-post-checkout-hook",
+  "taskStatus": "In Review",
+  "deployedAt": "2026-10-30T13:13:01.684Z",
+  "url": "https://sanjeev0304.github.io/worktree-ci-prototype/stage/24/"
+}
