@@ -1,10 +1,10 @@
 {
   "env": "pre-prod",
-  "version": "qa@ad8349d",
-  "commit": "ad8349d97472110cb1758c503583bd4051518cca",
-  "task": "24",
-  "branch": "fix/24-skip-gh-pages-in-post-checkout-hook",
+  "version": "qa@16df924",
+  "commit": "16df9247528e39c694659c79f94222dec6bbb2fd",
+  "task": "29",
+  "branch": "fix/29-pages-build-must-use-the-app-s-ui-styles",
   "taskStatus": "Done",
-  "deployedAt": "2026-10-30T13:18:29.162Z",
+  "deployedAt": "2026-10-30T13:44:42.939Z",
   "url": "https://sanjeev0304.github.io/worktree-ci-prototype/pre-prod/"
 }
