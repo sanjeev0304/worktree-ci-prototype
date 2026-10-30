@@ -45,3 +45,15 @@ test('stage folders are keyed by task id, else by a URL-safe branch name', () =>
   assert.strictEqual(subpathFor('stage', '', '../x'), 'stage/x');
   assert.throws(() => subpathFor('stage', '', ''), /--task/);
 });
+
+test('static build ships the same page styles as the app in src/server.js', () => {
+  const src = fs.mkdtempSync(path.join(os.tmpdir(), 'gh-pages-src-'));
+  fs.copyFileSync(path.join(__dirname, '../../src/invoice-dashboard.js'), path.join(src, 'invoice-dashboard.js'));
+  fs.writeFileSync(path.join(src, 'server.js'), 'const page = `<style>\n  body { background:#000; color:#fff; }\n</style>`;\n');
+  const out = fs.mkdtempSync(path.join(os.tmpdir(), 'gh-pages-'));
+  build({ env: 'stage', version: 'local', task: '29', out, src });
+  const css = fs.readFileSync(path.join(out, 'stage', '29', 'styles.css'), 'utf8');
+  assert.match(css, /^body \{ background:#000; color:#fff; \}/);
+  assert.match(css, /\.env-bar \{/);
+  assert.match(css, /\.rule, \.muted \{/);
+});
