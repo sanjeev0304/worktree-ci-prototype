@@ -1,10 +1,10 @@
 {
   "env": "prod",
-  "version": "release-v1.3.0",
-  "commit": "36bf63f3316bd0d732e09e2cafeb20de58cfd6de",
-  "task": "27,29",
+  "version": "release-v1.4.0",
+  "commit": "fe7ba1b0433cf412d14c779ce26e48faaa2fefec",
+  "task": "32",
   "branch": "qa",
   "taskStatus": "Deployed",
-  "deployedAt": "2026-10-30T13:47:59.920Z",
+  "deployedAt": "2026-10-30T14:10:53.252Z",
   "url": "https://sanjeev0304.github.io/worktree-ci-prototype/prod/"
 }
