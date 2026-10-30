@@ -83,10 +83,10 @@ function renderPage() {
 <title>Enterprise Invoice Dashboard</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap">
 <style>
-  :root { color-scheme:dark; --bg:#000; --card:#111418; --ink:#fff; --muted:#d0d6e2; --line:#2c323d; --accent:#7c4dff; --bad:#ff6b6b; --good:#4ade80; }
+  :root { color-scheme:dark; --bg:#d00000; --card:#a80000; --ink:#fff; --muted:#fff; --line:#ff6666; --accent:#7a0000; --bad:#fff; --good:#fff; }
   * { box-sizing: border-box; }
   body { margin:0; font:15px/1.5 "Inter", system-ui, sans-serif; background:var(--bg); color:var(--ink); }
-  header { background:#000; color:#fff; padding:18px 24px; border-bottom:2px solid var(--accent); }
+  header { background:var(--bg); color:#fff; padding:18px 24px; border-bottom:2px solid var(--accent); }
   header h1 { margin:0; font-size:20px; }
   header p { margin:2px 0 0; color:var(--muted); font-size:13px; }
   main { max-width:760px; margin:24px auto; padding:0 16px; display:grid; gap:16px; }
@@ -94,7 +94,7 @@ function renderPage() {
   .card h2 { margin:0 0 12px; font-size:16px; }
   form { display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end; }
   label { display:grid; gap:4px; font-size:13px; color:var(--muted); }
-  select, input { font:inherit; padding:8px 10px; border:1px solid var(--line); border-radius:6px; min-width:160px; background:#000; color:#fff; }
+  select, input { font:inherit; padding:8px 10px; border:1px solid var(--line); border-radius:6px; min-width:160px; background:#7a0000; color:#fff; }
   button { font:inherit; padding:9px 18px; background:var(--accent); color:#fff; border:0; border-radius:6px; cursor:pointer; }
   table { width:100%; border-collapse:collapse; }
   td { padding:8px 0; border-bottom:1px solid var(--line); }
