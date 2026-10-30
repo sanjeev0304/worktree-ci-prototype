@@ -47,7 +47,7 @@ fail() {
 }
 
 [ -f "$REPORT" ] || fail "$REPORT does not exist (the audit was not run)."
-grep -qF "| **Branch** | \`$BRANCH\` |" "$REPORT" || fail "$REPORT was generated on another branch. Re-run the audit here."
+grep -qF "**Branch** \`$BRANCH\` ·" "$REPORT" || fail "$REPORT was generated on another branch. Re-run the audit here."
 grep -qF "$MARKER" "$REPORT" || fail "$REPORT does not contain \"$MARKER\" (manual check not recorded)."
 
 exit 0
