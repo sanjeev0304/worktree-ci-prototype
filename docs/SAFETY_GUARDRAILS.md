@@ -28,6 +28,15 @@ GitHub Project (fields: Task Name, Severity, Type, Status), mirrored as `severit
 A task is never closed before its code lands: `Done` cannot be set by hand, and the CI
 gate fails a PR whose linked issue is already closed.
 
+**One-time setup for the CI rows above:** add a `PROJECT_TOKEN` repository secret (classic
+PAT with the `repo` and `project` scopes) with `gh secret set PROJECT_TOKEN`. The built-in
+`GITHUB_TOKEN` cannot see a user-owned Project, so without the secret only the `status:*`
+label changes and the card stays in `In Progress`. The `Task Lifecycle` job fails (red)
+whenever the board was not updated. As a backup, turn on the board's built-in
+**Workflows → Item closed** and **Pull request merged** (both set Status `Done`).
+To backfill a task merged while the board was not updating:
+`node scripts/manage-project-task.js sync --issue <N> --set Done`.
+
 - **CI:** the PR body must contain `Closes #<issue>`, the issue must exist and be open,
   and it must match the issue id in the branch name.
 
