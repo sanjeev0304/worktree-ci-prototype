@@ -32,6 +32,9 @@ branch="$(git symbolic-ref --quiet --short HEAD || echo '(detached)')"
 
 [ "$head" = "$latest" ] && { echo "✅ Worktree is on the latest $base (${latest%"${latest#???????}"})."; exit 0; }
 
+# Branches with unrelated history (gh-pages, qa-evidence-images) are not task work.
+git merge-base "$head" "$latest" >/dev/null 2>&1 || exit 0
+
 if git merge-base --is-ancestor "$head" "$latest"; then
   # No commits of its own: safe to move it forward to the latest base.
   if [ -n "$(git status --porcelain)" ]; then
