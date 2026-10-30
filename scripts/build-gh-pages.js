@@ -1,15 +1,18 @@
 #!/usr/bin/env node
 /**
  * build-gh-pages.js — builds one environment of the static Invoice Calculator into a
- * checkout of the gh-pages branch, then regenerates the root Environment Portal.
+ * checkout of the gh-pages branch, then regenerates the root Environment Dashboard.
  *
- *   dev/<taskId>/   deploy: true | deploy: test   on an open PR      (ChatOps)
- *   qa/             deploy: <tag> + approved PR                       (ChatOps, git tag)
- *   pre-prod/       PR merged to main                                 (pull_request closed)
- *   prod/           release: <name>                                   (ChatOps, GitHub Release)
+ * The 2-PR pipeline (see CLAUDE.md and .github/workflows/deployment-pipeline.yml):
+ *
+ *   feature branch ──push / deploy: true──▶ stage/<taskOrBranch>/   STAGE / DEV
+ *   PR -> qa       ──deploy: qa-v1.2.0───▶ qa/                     QA (git tag)
+ *   merged into qa ──────────────────────▶ pre-prod/               PRE-PROD
+ *   PR qa -> main  ──release: release-v1.2.0 + merge──▶ prod/      MAIN / PROD (GitHub Release)
  *
  * Only the target folder is rewritten, so environments never overwrite each other.
- * Each folder gets index.html, styles.css, app.js and deploy.json (read by the portal).
+ * Each folder gets index.html, styles.css, app.js and deploy.json (read by the dashboard).
+ * A stage build also leaves dev/<key>/ as a redirect to stage/<key>/.
  *
  * The calculator bundles src/invoice-dashboard.js verbatim, so the live page runs the
  * real RULE #404 math. The core layer (auth, sessions, database) is NOT shipped to a
@@ -17,11 +20,14 @@
  * The app source is only read as text here, never executed, so CI can build PR code safely.
  *
  * Usage:
- *   node scripts/build-gh-pages.js --env <dev|qa|pre-prod|prod> --version <tagOrCommit>
- *        [--task <taskId>] [--task-status <status>] [--commit <sha>] [--subpath <path>]
- *        [--out <gh-pages checkout>] [--src <dir holding invoice-dashboard.js>] [--repo <owner/name>]
- *   node scripts/build-gh-pages.js --init [--out <dir>]   empty env folders + portal
- *   node scripts/build-gh-pages.js --portal [--out <dir>] regenerate the portal only
+ *   node scripts/build-gh-pages.js --env <stage|qa|pre-prod|prod> --version <tagOrCommit>
+ *        [--task <id[,id...]>] [--branch <name>] [--task-status <status>] [--commit <sha>]
+ *        [--subpath <path>] [--out <gh-pages checkout>] [--src <dir holding invoice-dashboard.js>]
+ *        [--repo <owner/name>]
+ *   (--env dev is accepted as an alias of stage. A stage folder is keyed by the task id,
+ *    or by the branch name when there is no task.)
+ *   node scripts/build-gh-pages.js --init [--out <dir>]   empty env folders + dashboard
+ *   node scripts/build-gh-pages.js --portal [--out <dir>] regenerate the dashboard only
  */
 'use strict';
 
@@ -31,12 +37,14 @@ const path = require('path');
 const ROOT = path.resolve(__dirname, '..');
 const DEFAULT_REPO = 'sanjeev0304/worktree-ci-prototype';
 
+// In pipeline order.
 const ENVS = {
-  prod: { label: 'PROD', color: '#1b7f3b', path: 'prod' },
-  'pre-prod': { label: 'PRE-PROD', color: '#2f5bea', path: 'pre-prod' },
-  qa: { label: 'QA', color: '#b26a00', path: 'qa' },
-  dev: { label: 'DEV', color: '#7b3fe4', path: 'dev' },
+  stage: { label: 'STAGE / DEV', color: '#7b3fe4', path: 'stage', step: 'Feature branch push or deploy: true' },
+  qa: { label: 'QA', color: '#b26a00', path: 'qa', step: 'PR -> qa, deploy: qa-v* (git tag)' },
+  'pre-prod': { label: 'PRE-PROD', color: '#2f5bea', path: 'pre-prod', step: 'PR merged into qa' },
+  prod: { label: 'MAIN / PROD', color: '#1b7f3b', path: 'prod', step: 'PR qa -> main, release: release-v* + merge' },
 };
+const ALIASES = { dev: 'stage' };
 
 // Demo customers per type, matching CUSTOMER_BY_TYPE in src/server.js.
 const DEMO_CUSTOMERS = {
@@ -52,13 +60,31 @@ function pagesUrl(repo, subpath = '') {
   return `https://${owner}.github.io/${name}/${subpath ? subpath.replace(/^\/|\/$/g, '') + '/' : ''}`;
 }
 
-/** Path of an environment folder inside gh-pages, e.g. "dev/22" or "qa". */
-function subpathFor(env, task) {
-  if (!ENVS[env]) throw new Error(`--env must be one of: ${Object.keys(ENVS).join(', ')}`);
-  if (env !== 'dev') return ENVS[env].path;
-  if (!/^[0-9]+$/.test(String(task || ''))) throw new Error('dev builds need --task <numeric issue id>');
-  return `dev/${task}`;
+const envName = (env) => ALIASES[env] || env;
+
+/** Folder key for a stage build: the task id, else the branch name made URL-safe. */
+function stageKey(task, branch) {
+  const id = String(task || '').split(',')[0];
+  if (/^[0-9]+$/.test(id)) return id;
+  const slug = String(branch || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60);
+  if (!slug) throw new Error('stage builds need --task <numeric issue id> or --branch <name>');
+  return slug;
 }
+
+/** Path of an environment folder inside gh-pages, e.g. "stage/23" or "qa". */
+function subpathFor(env, task, branch) {
+  env = envName(env);
+  if (!ENVS[env]) throw new Error(`--env must be one of: ${Object.keys(ENVS).join(', ')}`);
+  return env === 'stage' ? `stage/${stageKey(task, branch)}` : ENVS[env].path;
+}
+
+/** Links to every task in a "23,24" list. */
+const taskLinks = (repo, task) =>
+  String(task || '')
+    .split(',')
+    .filter(Boolean)
+    .map((t) => `<a href="https://github.com/${esc(repo)}/issues/${esc(t)}">#${esc(t)}</a>`)
+    .join(' ') || 'n/a';
 
 /** Wraps the UI-layer source in a tiny CommonJS loader, with a stub core layer. */
 function bundle(dashboardSource) {
@@ -138,6 +164,11 @@ tr.total td { font-weight:700; font-size:17px; border-bottom:0; }
 .env-card { display:grid; gap:6px; text-decoration:none; border-top:4px solid var(--env); }
 .env-card h2 { margin:0; display:flex; justify-content:space-between; align-items:center; }
 .env-card.empty { opacity:.6; }
+.pipeline { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin:0; padding:0; list-style:none; }
+.pipeline li { display:grid; gap:2px; padding:10px 12px; border-radius:8px; background:var(--card); border:1px solid var(--line); border-top:4px solid var(--env, var(--line)); font-size:13px; }
+.pipeline li b { font-size:14px; }
+.pipeline li.gate { border-style:dashed; background:transparent; }
+.pipeline .arrow { border:0; background:none; padding:0; color:var(--muted); font-size:18px; }
 footer { text-align:center; color:var(--muted); font-size:12px; padding-bottom:24px; }
 `;
 
@@ -155,20 +186,20 @@ function head(title, cssHref) {
 
 function renderApp(meta, repo) {
   const env = ENVS[meta.env];
-  const portal = meta.env === 'dev' ? '../../' : '../';
+  const portal = meta.env === 'stage' ? '../../' : '../';
   const commitLink = meta.commit
     ? `<a href="https://github.com/${esc(repo)}/commit/${esc(meta.commit)}"><code>${esc(meta.commit.slice(0, 7))}</code></a>`
     : '<code>n/a</code>';
-  const taskLink = meta.task ? `<a href="https://github.com/${esc(repo)}/issues/${esc(meta.task)}">#${esc(meta.task)}</a>` : 'n/a';
   return `${head(`Invoice Calculator · ${env.label}`, 'styles.css')}
 <body data-env="${esc(meta.env)}">
 <div class="env-bar">
   <span class="env-badge" style="background:${env.color}">${env.label}</span>
-  <span>Version <b><code>${esc(meta.version)}</code></b></span>
+  <span>${meta.env === 'prod' ? 'Release' : meta.env === 'qa' ? 'Tag' : 'Version'} <b><code>${esc(meta.version)}</code></b></span>
   <span>Commit ${commitLink}</span>
-  <span>Task <b>${taskLink}</b> · ${esc(meta.taskStatus || 'unknown')}</span>
+  <span>Task <b>${taskLinks(repo, meta.task)}</b> · ${esc(meta.taskStatus || 'unknown')}</span>
   <span>Deployed ${esc(meta.deployedAt)}</span>
-  <a class="portal" href="${portal}">All environments →</a>
+  ${meta.branch ? `<span>Branch <code>${esc(meta.branch)}</code></span>` : ''}
+  <a class="portal" href="${portal}">Environment Dashboard →</a>
 </div>
 <header>
   <h1>Enterprise Invoice Dashboard</h1>
@@ -221,45 +252,68 @@ function readMeta(dir) {
 function envCard(env, meta, href) {
   const e = ENVS[env];
   if (!meta) {
-    return `<div class="card env-card empty" style="--env:${e.color}"><h2>${e.label}</h2><span class="muted">Not deployed yet</span></div>`;
+    return `<div class="card env-card empty" style="--env:${e.color}"><h2>${e.label}</h2><span class="muted">Not deployed yet</span>
+    <span class="muted">${esc(e.step)}</span></div>`;
   }
-  const title = env === 'dev' ? `${e.label} · #${esc(meta.task)}` : e.label;
+  const title = env === 'stage' ? `${e.label} · ${esc(href.split('/')[1])}` : e.label;
   return `<a class="card env-card" style="--env:${e.color}" href="${href}">
     <h2>${title} <span class="env-badge" style="background:${e.color};font-size:11px">LIVE</span></h2>
-    <span>Version <code>${esc(meta.version)}</code>${meta.commit ? ` · <code>${esc(meta.commit.slice(0, 7))}</code>` : ''}</span>
-    <span class="muted">Task ${meta.task ? `#${esc(meta.task)}` : 'n/a'} · ${esc(meta.taskStatus || 'unknown')}</span>
+    <span>${env === 'prod' ? 'Release' : env === 'qa' ? 'Tag' : 'Version'} <code>${esc(meta.version)}</code>${meta.commit ? ` · <code>${esc(meta.commit.slice(0, 7))}</code>` : ''}</span>
+    <span class="muted">Task ${meta.task ? esc(String(meta.task).split(',').map((t) => '#' + t).join(' ')) : 'n/a'} · ${esc(meta.taskStatus || 'unknown')}</span>
     <span class="muted">Deployed ${esc(meta.deployedAt)}</span>
   </a>`;
 }
 
+function pipelineStep(env, meta) {
+  const e = ENVS[env];
+  const live = meta ? `<code>${esc(meta.version)}</code>` : '<span class="muted">not deployed</span>';
+  return `<li style="--env:${e.color}"><b>${e.label}</b>${live}</li>`;
+}
+
 /** Rewrites <out>/index.html from the deploy.json of every environment folder. */
 function writePortal(out, repo) {
-  const devDir = path.join(out, 'dev');
-  const devs = (fs.existsSync(devDir) ? fs.readdirSync(devDir) : [])
-    .map((task) => ({ task, meta: readMeta(path.join(devDir, task)) }))
+  const stageDir = path.join(out, 'stage');
+  const stages = (fs.existsSync(stageDir) ? fs.readdirSync(stageDir) : [])
+    .map((key) => ({ key, meta: readMeta(path.join(stageDir, key)) }))
     .filter((d) => d.meta)
     .sort((a, b) => String(b.meta.deployedAt).localeCompare(String(a.meta.deployedAt)));
-  const main = ['prod', 'pre-prod', 'qa'].map((env) => envCard(env, readMeta(path.join(out, env)), `${env}/`)).join('\n');
-  const dev = devs.length
-    ? devs.map((d) => envCard('dev', d.meta, `dev/${d.task}/`)).join('\n')
-    : envCard('dev', null, '');
+  const metas = { qa: readMeta(path.join(out, 'qa')), 'pre-prod': readMeta(path.join(out, 'pre-prod')), prod: readMeta(path.join(out, 'prod')) };
+  const arrow = '<li class="arrow" aria-hidden="true">→</li>';
+  const gate = (text) => `<li class="gate">${text}</li>`;
+  const pipeline = [
+    gate('<b>Feature branch</b><span class="muted">worktree</span>'),
+    pipelineStep('stage', stages[0] && stages[0].meta),
+    gate('<b>Testing + Evidence</b><span class="muted">audit report + screenshot</span>'),
+    gate('<b>PR → qa</b><span class="muted">deploy: qa-v1.2.0</span>'),
+    pipelineStep('qa', metas.qa),
+    pipelineStep('pre-prod', metas['pre-prod']),
+    gate('<b>PR qa → main</b><span class="muted">release: release-v1.2.0</span>'),
+    pipelineStep('prod', metas.prod),
+  ].join(arrow);
+  const release = ['prod', 'pre-prod', 'qa'].map((env) => envCard(env, metas[env], `${env}/`)).join('\n');
+  const stage = stages.length
+    ? stages.map((d) => envCard('stage', d.meta, `stage/${d.key}/`)).join('\n')
+    : envCard('stage', null, '');
   fs.writeFileSync(
     path.join(out, 'index.html'),
-    `${head('Environment Portal', 'portal.css')}
+    `${head('Environment Dashboard', 'portal.css')}
 <body>
 <header>
-  <h1>Environment Portal</h1>
+  <h1>Environment Dashboard</h1>
   <p>worktree-ci-prototype · <a href="https://github.com/${esc(repo)}">${esc(repo)}</a> · ${esc(pagesUrl(repo))}</p>
 </header>
-<main style="max-width:1000px">
+<main style="max-width:1100px">
+  <section><h2>Pipeline</h2><ol class="pipeline">
+${pipeline}
+  </ol></section>
   <section><h2>Release environments</h2><div class="grid">
-${main}
+${release}
   </div></section>
-  <section><h2>Active dev previews</h2><div class="grid">
-${dev}
+  <section><h2>Stage (feature branches)</h2><div class="grid">
+${stage}
   </div></section>
 </main>
-<footer>Portal regenerated ${new Date().toISOString()}</footer>
+<footer>Dashboard regenerated ${new Date().toISOString()}</footer>
 </body>
 </html>
 `
@@ -270,15 +324,16 @@ ${dev}
 
 /** Creates the four environment folders (with placeholders) and the portal. */
 function init(out, repo) {
-  for (const env of Object.keys(ENVS)) {
-    const dir = path.join(out, ENVS[env].path);
+  for (const env of [...Object.keys(ENVS), 'dev']) {
+    const label = ENVS[env] ? ENVS[env].label : 'DEV';
+    const dir = path.join(out, ENVS[env] ? ENVS[env].path : 'dev');
     fs.mkdirSync(dir, { recursive: true });
     if (!fs.existsSync(path.join(dir, 'index.html'))) {
       const back = '../';
       fs.writeFileSync(
         path.join(dir, 'index.html'),
-        `<!doctype html><meta charset="utf-8"><title>${ENVS[env].label}: not deployed</title>` +
-          `<p>${ENVS[env].label} has not been deployed yet. <a href="${back}">Environment Portal</a></p>\n`
+        `<!doctype html><meta charset="utf-8"><title>${label}: not deployed</title>` +
+          `<p>${label} has not been deployed yet. <a href="${back}">Environment Dashboard</a></p>\n`
       );
     }
   }
@@ -289,17 +344,19 @@ function init(out, repo) {
 function build(opts) {
   const out = path.resolve(opts.out || path.join(ROOT, 'gh-pages-build'));
   const repo = opts.repo || DEFAULT_REPO;
-  const subpath = opts.subpath || subpathFor(opts.env, opts.task);
-  if (!ENVS[opts.env]) throw new Error(`--env must be one of: ${Object.keys(ENVS).join(', ')}`);
+  const env = envName(opts.env);
+  const subpath = opts.subpath || subpathFor(env, opts.task, opts.branch);
+  if (!ENVS[env]) throw new Error(`--env must be one of: ${Object.keys(ENVS).join(', ')}`);
   if (!opts.version) throw new Error('--version <tagOrCommit> is required');
   if (path.isAbsolute(subpath) || subpath.split(/[\\/]/).includes('..')) throw new Error('--subpath must stay inside --out');
 
   const source = fs.readFileSync(path.join(opts.src || path.join(ROOT, 'src'), 'invoice-dashboard.js'), 'utf8');
   const meta = {
-    env: opts.env,
+    env,
     version: String(opts.version),
     commit: opts.commit || '',
     task: opts.task ? String(opts.task) : '',
+    branch: opts.branch || '',
     taskStatus: opts.taskStatus || '',
     deployedAt: new Date().toISOString(),
     url: pagesUrl(repo, subpath),
@@ -312,6 +369,16 @@ function build(opts) {
   fs.writeFileSync(path.join(dir, 'styles.css'), STYLES);
   fs.writeFileSync(path.join(dir, 'app.js'), bundle(source));
   fs.writeFileSync(path.join(dir, 'deploy.json'), JSON.stringify(meta, null, 2) + '\n');
+  if (env === 'stage') {
+    // Keep dev/<key>/ working as an alias of stage/<key>/.
+    const alias = path.join(out, 'dev', path.basename(dir));
+    fs.mkdirSync(alias, { recursive: true });
+    fs.writeFileSync(
+      path.join(alias, 'index.html'),
+      `<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0; url=../../${subpath}/">` +
+        `<title>Redirecting to ${esc(subpath)}</title><a href="../../${subpath}/">${esc(subpath)}</a>\n`
+    );
+  }
   writePortal(out, repo);
   return meta;
 }
@@ -322,12 +389,13 @@ function parseFlags(argv) {
     if (!argv[i].startsWith('--')) continue;
     const key = argv[i].slice(2).replace(/-([a-z])/g, (_, c) => c.toUpperCase());
     const next = argv[i + 1];
-    flags[key] = next && !next.startsWith('--') ? (i++, next) : true;
+    // An empty value (--task "") stays empty instead of becoming true.
+    flags[key] = next !== undefined && !next.startsWith('--') ? (i++, next) : true;
   }
   return flags;
 }
 
-module.exports = { build, init, writePortal, bundle, subpathFor, pagesUrl, ENVS };
+module.exports = { build, init, writePortal, bundle, subpathFor, stageKey, pagesUrl, ENVS };
 
 if (require.main === module) {
   try {
@@ -336,10 +404,10 @@ if (require.main === module) {
     const repo = flags.repo || DEFAULT_REPO;
     if (flags.init) {
       init(out, repo);
-      console.log(`✅ Initialized ${Object.keys(ENVS).join(', ')} folders and the portal in ${out}`);
+      console.log(`✅ Initialized ${Object.keys(ENVS).join(', ')} folders and the dashboard in ${out}`);
     } else if (flags.portal) {
       writePortal(out, repo);
-      console.log(`✅ Portal regenerated in ${out}`);
+      console.log(`✅ Dashboard regenerated in ${out}`);
     } else {
       const meta = build({ ...flags, out });
       console.log(`✅ Built ${ENVS[meta.env].label} (${meta.version}) → ${meta.url}`);

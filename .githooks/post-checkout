@@ -1,11 +1,13 @@
 #!/bin/sh
-# post-checkout — every new worktree starts from the latest origin/main.
+# post-checkout — every new worktree starts from the latest origin/qa.
 #
+# Task PRs target qa (the 2-PR pipeline in CLAUDE.md), so qa is the base for new work;
+# origin/main is used if the repo has no qa branch yet.
 # Git runs this after `git worktree add` (and after `git clone`). In that case the
-# previous HEAD ($1) is all zeros. The hook then fetches origin/main and:
-#   - moves the new worktree onto origin/main when its branch has no commits of its
-#     own (it was only cut from an old base), or
-#   - warns when the branch has its own work and is behind main, so you merge main.
+# previous HEAD ($1) is all zeros. The hook then fetches the base and:
+#   - moves the new worktree onto it when its branch has no commits of its own
+#     (it was only cut from an old base), or
+#   - warns when the branch has its own work and is behind the base, so you merge it.
 # Normal branch switches are left alone. Offline? It warns and carries on.
 
 prev="$1"
@@ -17,30 +19,32 @@ case "$prev" in
   *[!0]*) exit 0 ;;
 esac
 
-if ! git fetch --quiet origin main 2>/dev/null; then
-  echo "⚠️  post-checkout: could not fetch origin/main (offline?). This worktree may be out of date." >&2
+base=qa
+git fetch --quiet origin qa 2>/dev/null || base=main
+if [ "$base" = "main" ] && ! git fetch --quiet origin main 2>/dev/null; then
+  echo "⚠️  post-checkout: could not fetch origin/qa or origin/main (offline?). This worktree may be out of date." >&2
   exit 0
 fi
 
-latest="$(git rev-parse origin/main)"
+latest="$(git rev-parse "origin/$base")"
 head="$(git rev-parse HEAD)"
 branch="$(git symbolic-ref --quiet --short HEAD || echo '(detached)')"
 
-[ "$head" = "$latest" ] && { echo "✅ Worktree is on the latest main (${latest%"${latest#???????}"})."; exit 0; }
+[ "$head" = "$latest" ] && { echo "✅ Worktree is on the latest $base (${latest%"${latest#???????}"})."; exit 0; }
 
 if git merge-base --is-ancestor "$head" "$latest"; then
-  # No commits of its own: safe to move it forward to the latest main.
+  # No commits of its own: safe to move it forward to the latest base.
   if [ -n "$(git status --porcelain)" ]; then
-    echo "⚠️  post-checkout: $branch is behind origin/main but has local changes; not updating." >&2
+    echo "⚠️  post-checkout: $branch is behind origin/$base but has local changes; not updating." >&2
     exit 0
   fi
   git reset --quiet --hard "$latest"
-  echo "✅ Worktree $branch updated to the latest main (${latest%"${latest#???????}"})."
+  echo "✅ Worktree $branch updated to the latest $base (${latest%"${latest#???????}"})."
 else
   behind="$(git rev-list --count "HEAD..$latest")"
   if [ "$behind" -gt 0 ]; then
-    echo "⚠️  $branch has its own commits and is $behind commit(s) behind origin/main." >&2
-    echo "    Run: git merge origin/main" >&2
+    echo "⚠️  $branch has its own commits and is $behind commit(s) behind origin/$base." >&2
+    echo "    Run: git merge origin/$base" >&2
   fi
 fi
 exit 0

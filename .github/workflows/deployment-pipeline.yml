@@ -1,0 +1,346 @@
+name: Deployment Pipeline
+
+# The 2-PR, multi-branch deployment flow (see CLAUDE.md "Deployment pipeline"):
+#
+#   STAGE 1  push to a <type>/<id>-<slug> branch, or      -> stage/<taskOrBranch>/  (+ dev/ alias)
+#            "deploy: true" / "deploy: stage" on its PR       after Testing + Evidence (audit report
+#                                                             + screenshot generated and checked in CI)
+#   STAGE 2  PR -> qa: "deploy: qa-v1.2.0" comment,        -> git tag qa-v1.2.0 on the PR head, qa/
+#            or a "qa-v1.2.0" label on the PR
+#            PR -> qa merged                               -> pre-prod/   (task Done: task-lifecycle.yml)
+#   STAGE 3  PR qa -> main: "release: release-v1.2.0"      -> on merge: GitHub Release + tag, prod/,
+#            comment (before or after the merge)              every task in the release -> Deployed
+#
+# https://sanjeev0304.github.io/worktree-ci-prototype/ is the Environment Dashboard.
+# Each deploy rewrites only its own folder plus the dashboard, so environments never collide.
+#
+# Security: commands count only from the repo owner, members and collaborators. The
+# evidence job runs the branch's code with a read-only token. The deploy job (the only one
+# that can write) runs scripts from main and reads the deployed code with `git archive`,
+# as data only. Deployed needs the PROJECT_TOKEN secret to move board cards.
+
+on:
+  push:
+    branches: ['feat/**', 'fix/**', 'chore/**', 'docs/**', 'refactor/**', 'test/**', 'ci/**', 'perf/**', 'hotfix/**']
+  issue_comment:
+    types: [created]
+  pull_request:
+    branches: [qa, main]
+    types: [labeled, closed]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  route:
+    name: Route
+    if: >-
+      (github.event_name == 'push' && !github.event.deleted) ||
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request &&
+        (startsWith(github.event.comment.body, 'deploy:') || startsWith(github.event.comment.body, 'release:'))) ||
+      (github.event_name == 'pull_request' && github.event.action == 'labeled' && startsWith(github.event.label.name, 'qa-')) ||
+      (github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == true)
+    runs-on: ubuntu-latest
+    outputs:
+      env: ${{ steps.route.outputs.env }}
+      sha: ${{ steps.route.outputs.sha }}
+      checkout_ref: ${{ steps.route.outputs.checkout_ref }}
+      tag: ${{ steps.route.outputs.tag }}
+      version: ${{ steps.route.outputs.version }}
+      task: ${{ steps.route.outputs.task }}
+      branch: ${{ steps.route.outputs.branch }}
+      pr: ${{ steps.route.outputs.pr }}
+    steps:
+      - id: route
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          ACTOR: ${{ github.actor }}
+          PUSH_SHA: ${{ github.sha }}
+          PUSH_BRANCH: ${{ github.ref_name }}
+          PR: ${{ github.event.issue.number || github.event.pull_request.number }}
+          BODY: ${{ github.event.comment.body }}
+          ASSOC: ${{ github.event.comment.author_association }}
+          LABEL: ${{ github.event.label.name }}
+        run: |
+          set -euo pipefail
+          out() { echo "$1=$2" >> "$GITHUB_OUTPUT"; }
+          say() { gh pr comment "$PR" -R "$REPO" --body "$1" >/dev/null; }
+          stop() { say "$1"; echo "::error::$1"; exit 1; }
+          task_of() { sed -nE 's#^[a-z]+/([0-9]+)-.*#\1#p' <<< "$1"; }
+          QA_TAG_RE='^qa-[A-Za-z0-9._-]{1,60}$'
+          RELEASE_RE='^release-[A-Za-z0-9._-]{1,55}$'
+          TRUSTED='.author_association == "OWNER" or .author_association == "MEMBER" or .author_association == "COLLABORATOR"'
+
+          if [ "$EVENT" = "push" ]; then
+            PR="$(gh pr list -R "$REPO" --head "$PUSH_BRANCH" --state open --json number -q '.[0].number // ""')"
+            out env stage; out sha "$PUSH_SHA"; out checkout_ref "$PUSH_SHA"; out branch "$PUSH_BRANCH"
+            out task "$(task_of "$PUSH_BRANCH")"; out version "${PUSH_SHA:0:7}"; out pr "$PR"
+            exit 0
+          fi
+
+          if [ "$EVENT" = "issue_comment" ]; then
+            case "$ASSOC" in OWNER|MEMBER|COLLABORATOR) ;; *)
+              echo "::notice::Ignored: $ACTOR is $ASSOC; only the owner, members and collaborators can deploy."; exit 0 ;;
+            esac
+          fi
+
+          PR_JSON="$(gh api "repos/$REPO/pulls/$PR")"
+          STATE="$(jq -r .state <<< "$PR_JSON")"; MERGED="$(jq -r .merged <<< "$PR_JSON")"
+          BASE="$(jq -r .base.ref <<< "$PR_JSON")"; HEAD_REF="$(jq -r .head.ref <<< "$PR_JSON")"
+          HEAD_SHA="$(jq -r .head.sha <<< "$PR_JSON")"; MERGE_SHA="$(jq -r '.merge_commit_sha // ""' <<< "$PR_JSON")"
+          FIRST="$(printf '%s\n' "$BODY" | head -n1 | tr -d '\r' | sed -E 's/[[:space:]]+$//')"
+          out pr "$PR"; out branch "$HEAD_REF"
+
+          # Latest trusted "release: <name>" comment on this PR, if any.
+          release_comment() {
+            gh api --paginate "repos/$REPO/issues/$PR/comments" --jq ".[] | select($TRUSTED)
+              | .body | split(\"\n\")[0] | sub(\"\r$\"; \"\") | sub(\"\\\\s+$\"; \"\")
+              | capture(\"^release:\\\\s*(?<n>\\\\S+)$\").n" | tail -n1
+          }
+          # Tasks in a release: the <type>/<id>-<slug> PRs that were merged into qa.
+          release_tasks() {
+            for sha in $(gh api --paginate "repos/$REPO/pulls/$PR/commits" --jq '.[].sha'); do
+              gh api "repos/$REPO/commits/$sha/pulls" --jq '.[] | select(.base.ref == "qa" and .merged_at != null) | .head.ref'
+            done | sed -nE 's#^[a-z]+/([0-9]+)-.*#\1#p' | sort -un | paste -sd, -
+          }
+          go_prod() {
+            local name="$1"
+            [[ "$name" =~ $RELEASE_RE ]] || stop "⛔ \`$name\` is not a release name. Use \`release-<version>\`, e.g. \`release: release-v1.2.0\`."
+            gh release view "$name" -R "$REPO" >/dev/null 2>&1 && stop "⛔ Release \`$name\` already exists. Pick a new release name."
+            out env prod; out sha "$MERGE_SHA"; out checkout_ref "$MERGE_SHA"; out tag "$name"; out version "$name"
+            out task "$(release_tasks)"
+          }
+
+          if [ "$EVENT" = "pull_request" ] && [ "$ACTION" = "closed" ]; then
+            if [ "$BASE" = "qa" ]; then
+              out env pre-prod; out sha "$MERGE_SHA"; out checkout_ref "$MERGE_SHA"
+              out task "$(task_of "$HEAD_REF")"; out version "qa@${MERGE_SHA:0:7}"
+            elif [ "$HEAD_REF" = "qa" ]; then
+              NAME="$(release_comment)"
+              if [ -z "$NAME" ]; then
+                say "ℹ️ Merged into \`main\` without a release name, so nothing was deployed to PROD. Comment \`release: release-v<version>\` here to release it."
+                exit 0
+              fi
+              go_prod "$NAME"
+            else
+              echo "::notice::PR into main from $HEAD_REF (not qa); no deploy."
+            fi
+            exit 0
+          fi
+
+          if [ "$EVENT" = "pull_request" ]; then   # labeled qa-*
+            [ "$BASE" = "qa" ] && [ "$STATE" = "open" ] || { echo "::notice::Label $LABEL ignored: not an open PR -> qa."; exit 0; }
+            FIRST="deploy: $LABEL"
+          fi
+
+          if [[ "$FIRST" =~ ^deploy:[[:space:]]*(true|test|stage)$ ]]; then
+            [ "$STATE" = "open" ] || stop "⛔ Stage deploys need an open PR."
+            out env stage; out sha "$HEAD_SHA"; out checkout_ref "refs/pull/$PR/head"
+            out task "$(task_of "$HEAD_REF")"; out version "${HEAD_SHA:0:7}"
+          elif [[ "$FIRST" =~ ^deploy:[[:space:]]*([^[:space:]]+)$ ]]; then
+            TAG="${BASH_REMATCH[1]}"
+            [ "$BASE" = "qa" ] || stop "⛔ QA deploys come from a PR into \`qa\` (this PR targets \`$BASE\`)."
+            [ "$STATE" = "open" ] || stop "⛔ QA deploys need an open PR."
+            [[ "$TAG" =~ $QA_TAG_RE ]] || stop "⛔ \`$TAG\` is not a QA tag. Use \`qa-<version>\`, e.g. \`deploy: qa-v1.2.0\`."
+            out env qa; out sha "$HEAD_SHA"; out checkout_ref "refs/pull/$PR/head"; out tag "$TAG"; out version "$TAG"
+            out task "$(task_of "$HEAD_REF")"
+          elif [[ "$FIRST" =~ ^release:[[:space:]]*([^[:space:]]+)$ ]]; then
+            NAME="${BASH_REMATCH[1]}"
+            [ "$BASE" = "main" ] && [ "$HEAD_REF" = "qa" ] || stop "⛔ Releases come from the \`qa\` → \`main\` PR."
+            if [ "$MERGED" != "true" ]; then
+              [[ "$NAME" =~ $RELEASE_RE ]] || stop "⛔ \`$NAME\` is not a release name. Use \`release-<version>\`, e.g. \`release: release-v1.2.0\`."
+              say "📌 Release \`$NAME\` recorded. It deploys to PROD when this PR is merged into \`main\`."
+              exit 0
+            fi
+            go_prod "$NAME"
+          else
+            echo "::notice::Not a pipeline command: $FIRST"
+          fi
+
+  evidence:
+    name: Testing + Evidence
+    needs: route
+    if: needs.route.outputs.env == 'stage'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read   # runs the branch's own code: read-only token, no secrets
+    outputs:
+      summary: ${{ steps.check.outputs.summary }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.route.outputs.checkout_ref }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Run the audit (report + screenshot)
+        env:
+          AUDIT_BRANCH: ${{ needs.route.outputs.branch }}
+        run: |
+          git fetch --no-tags origin qa main 2>/dev/null || true
+          AUDIT_BASE="$(git merge-base origin/qa HEAD 2>/dev/null || git merge-base origin/main HEAD)" \
+            node scripts/run-pre-pr-audit.js --ci
+      - name: Validate the evidence
+        id: check
+        run: |
+          set -euo pipefail
+          for f in qa-evidence/PR_AUDIT_REPORT.md qa-evidence/latest-ui-proof.png; do
+            [ -s "$f" ] || { echo "::error::Missing evidence: $f"; exit 1; }
+          done
+          SUMMARY="$(grep -m1 -E 'RULE #404' qa-evidence/PR_AUDIT_REPORT.md | sed -E 's/[`|]//g' | cut -c1-200)"
+          echo "summary=${SUMMARY:-report and screenshot present}" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage-evidence-${{ needs.route.outputs.version }}
+          path: qa-evidence/
+          retention-days: 14
+
+  deploy:
+    name: Deploy ${{ needs.route.outputs.env }}
+    needs: [route, evidence]
+    if: >-
+      always() && needs.route.result == 'success' && needs.route.outputs.env != '' &&
+      (needs.evidence.result == 'success' || needs.evidence.result == 'skipped')
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      ENV_NAME: ${{ needs.route.outputs.env }}
+      SHA: ${{ needs.route.outputs.sha }}
+      TAG: ${{ needs.route.outputs.tag }}
+      VERSION: ${{ needs.route.outputs.version }}
+      TASK: ${{ needs.route.outputs.task }}
+      BRANCH: ${{ needs.route.outputs.branch }}
+      PR: ${{ needs.route.outputs.pr }}
+      EVIDENCE: ${{ needs.evidence.outputs.summary }}
+      BOT_NAME: github-actions[bot]
+      BOT_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+    steps:
+      - name: Check out main (trusted builder and scripts)
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Extract the app source at the deploy commit (data only, never executed)
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$SHA" 2>/dev/null || git fetch --no-tags origin "+refs/pull/$PR/head:refs/remotes/pr/head"
+          git cat-file -e "$SHA^{commit}"
+          mkdir -p app-src && git archive "$SHA" src | tar -x -C app-src
+
+      - name: Create the QA tag
+        if: env.ENV_NAME == 'qa'
+        run: |
+          set -euo pipefail
+          # An annotated tag's peeled ("^{}") entry is the commit it points at.
+          PEELED="$(git ls-remote origin "refs/tags/$TAG^{}" | cut -f1)"
+          EXISTING="${PEELED:-$(git ls-remote origin "refs/tags/$TAG" | cut -f1)}"
+          if [ -n "$EXISTING" ]; then
+            [ "$EXISTING" = "$SHA" ] || { echo "::error::Tag $TAG already exists on another commit."; exit 1; }
+            echo "Tag $TAG already points at $SHA; redeploying."
+          else
+            git -c user.name="$BOT_NAME" -c user.email="$BOT_EMAIL" tag -a "$TAG" "$SHA" -m "QA deploy from PR #$PR"
+            git push origin "refs/tags/$TAG"
+          fi
+
+      - name: Create the GitHub Release
+        if: env.ENV_NAME == 'prod'
+        run: gh release create "$TAG" -R "$REPO" --target "$SHA" --title "$TAG" --generate-notes
+
+      - name: Move the released tasks to Deployed
+        if: env.ENV_NAME == 'prod' && env.TASK != ''
+        env:
+          GH_TOKEN: ${{ secrets.PROJECT_TOKEN || github.token }}
+        run: |
+          for t in ${TASK//,/ }; do
+            node scripts/manage-project-task.js sync --issue "$t" --set Deployed \
+              --note "Released to PROD as \`$TAG\` (PR #$PR)." \
+              || echo "::warning::Task #$t was not moved to Deployed on the board (is PROJECT_TOKEN set?)."
+          done
+
+      - name: Build and push to gh-pages
+        id: pages
+        run: |
+          set -euo pipefail
+          case "$ENV_NAME" in
+            pre-prod) STATUS="Done" ;;
+            prod) STATUS="Deployed" ;;
+            *) STATUS="$( [ -n "$TASK" ] && gh issue view "$TASK" -R "$REPO" --json labels \
+                 -q '[.labels[].name | select(startswith("status:")) | ltrimstr("status:")] | first // ""' || true)" ;;
+          esac
+          # Retry: another deploy may push to gh-pages between our fetch and push.
+          for attempt in 1 2 3; do
+            rm -rf pages && git worktree prune
+            if git fetch --no-tags origin gh-pages 2>/dev/null; then
+              git worktree add -f -B gh-pages pages FETCH_HEAD
+            else
+              git worktree add --orphan -b gh-pages pages
+            fi
+            node scripts/build-gh-pages.js --env "$ENV_NAME" --version "$VERSION" --commit "$SHA" \
+              --task "$TASK" --branch "$BRANCH" --task-status "$STATUS" --src app-src/src --out pages
+            git -C pages add -A
+            git -C pages -c user.name="$BOT_NAME" -c user.email="$BOT_EMAIL" \
+              commit -q -m "Deploy $ENV_NAME: $VERSION (${BRANCH:-main}, ${SHA:0:7})"
+            if git -C pages push origin gh-pages; then exit 0; fi
+            sleep $((attempt * 5))
+          done
+          echo "::error::Could not push to gh-pages after 3 attempts."; exit 1
+
+      - name: Report the deploy
+        env:
+          URL: ${{ steps.pages.outputs.url }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          OWNER="${REPO%%/*}"; NAME="${REPO#*/}"
+          DASHBOARD="https://$OWNER.github.io/$NAME/"
+          CHECKS="$(gh api "repos/$REPO/commits/$SHA/check-runs" --paginate --jq '.check_runs[]
+            | select(.name == "Safety & Blast Radius Gate" or (.name | startswith("Lint")) or (.name | startswith("Audit evidence")))
+            | "\(if .conclusion == "success" then "✅" elif .conclusion == null then "⏳" else "❌" end) \(.name)"' | paste -sd, - | sed 's/,/ · /g' || true)"
+          case "$ENV_NAME" in
+            stage) TITLE="🧪 STAGE deployed: \`$BRANCH\`"; AUDIT="${EVIDENCE:-n/a}" ;;
+            qa) TITLE="🔎 QA deployed: tag \`$TAG\` created"; AUDIT="${CHECKS:-no CI checks on this commit yet}" ;;
+            pre-prod) TITLE="🚦 PRE-PROD deployed from \`qa\`"; AUDIT="${CHECKS:-n/a}" ;;
+            prod) TITLE="🚀 MAIN / PROD release \`$TAG\` is live"; AUDIT="${CHECKS:-n/a}" ;;
+          esac
+          {
+            [ "$ENV_NAME" = "stage" ] && echo "<!-- stage-deploy -->"
+            echo "### $TITLE"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| **Live URL** | $URL |"
+            echo "| **${ENV_NAME^^} version** | \`$VERSION\` |"
+            echo "| **Commit** | \`$SHA\` |"
+            [ -n "$TASK" ] && echo "| **Task** | $(sed -E 's/([0-9]+)/#\1/g; s/,/, /g' <<< "$TASK") |"
+            echo "| **Audit** | $AUDIT |"
+            [ "$ENV_NAME" = "prod" ] && echo "| **Release** | https://github.com/$REPO/releases/tag/$TAG |"
+            echo "| **Dashboard** | $DASHBOARD |"
+            echo
+            echo "<sub>GitHub Pages can take a minute to publish. [Workflow run]($RUN_URL)</sub>"
+          } > comment.md
+          cat comment.md >> "$GITHUB_STEP_SUMMARY"
+          [ -n "$PR" ] || exit 0
+          if [ "$ENV_NAME" = "stage" ]; then
+            # One sticky stage comment per PR, updated on every push.
+            id="$(gh api --paginate "repos/$REPO/issues/$PR/comments" \
+                  --jq '.[] | select(.body | startswith("<!-- stage-deploy -->")) | .id' | head -1)"
+            if [ -n "$id" ]; then gh api -X PATCH "repos/$REPO/issues/comments/$id" -F body=@comment.md >/dev/null; exit 0; fi
+          fi
+          gh pr comment "$PR" -R "$REPO" --body-file comment.md
+
+      - name: Report a failed deploy on the PR
+        if: failure() && env.PR != ''
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: gh pr comment "$PR" -R "$REPO" --body "❌ **$ENV_NAME deploy of \`$VERSION\` failed.** See the [workflow run]($RUN_URL)."

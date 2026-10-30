@@ -8,7 +8,7 @@ name: Claude Code Review
 
 on:
   pull_request:
-    branches: [main]
+    branches: [qa, main]
     types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:

@@ -20,7 +20,7 @@
  *   node scripts/run-pre-pr-audit.js --manual-passed "Notes from the user's manual check"
  *   node scripts/run-pre-pr-audit.js --ci     (CI: no local task file needed)
  *
- * Env: AUDIT_BASE (diff base; default: merge-base with origin/main) and EVIDENCE_IMAGE_URL
+ * Env: AUDIT_BASE (diff base; default: merge-base with origin/qa, else origin/main) and EVIDENCE_IMAGE_URL
  * (CI: where the screenshot is published, so the PR comment can show it inline).
  *
  * Exit code 1 if the server can't start, the main API call fails, or no screenshot is produced.
@@ -106,9 +106,9 @@ function repoInfo() {
 // ---------- what this PR changed ----------
 /** Evidence scope of this branch's changes (committed, uncommitted and new files) against main. */
 function changeScope() {
-  const base = process.env.AUDIT_BASE || git('merge-base origin/main HEAD');
+  const base = process.env.AUDIT_BASE || git('merge-base origin/qa HEAD') || git('merge-base origin/main HEAD');
   if (!base) {
-    log('Could not find the diff base (origin/main); showing all evidence.');
+    log('Could not find the diff base (origin/qa or origin/main); showing all evidence.');
     return { ui: true, api: true, files: [] };
   }
   const untracked = git('ls-files --others --exclude-standard')

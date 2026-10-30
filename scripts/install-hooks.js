@@ -34,4 +34,4 @@ console.log(`✅ Git hooks installed: core.hooksPath = ${git('config', '--get', 
 for (const hook of hooks) console.log(`   • .githooks/${hook}`);
 console.log('\nCommits and pushes need a branch named <type>/<issue-id>-<short-description> (pre-commit, pre-push).');
 console.log("Commits that change src/ need \"✅ Manual check passed\" in this branch's local qa-evidence/PR_AUDIT_REPORT.md.");
-console.log("New worktrees now start from the latest origin/main (post-checkout hook).");
+console.log("New worktrees now start from the latest origin/qa (post-checkout hook).");

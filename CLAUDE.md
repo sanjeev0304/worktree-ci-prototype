@@ -16,13 +16,15 @@ node scripts/manage-project-task.js create --title "<Task Name>" --type "<Task|I
   `<type>/<issue-id>-<short-description>` (e.g. `fix/104-login-timeout`) and moves the
   task to **In Progress**. Use `--branch-type <feat|fix|chore|docs|refactor|test|ci|perf|hotfix>`
   to override the default (`Bug`/`Issue` → `fix`, `Task` → `feat`).
-- **Status lifecycle: `Todo → In Progress → In Review → Done → Deployed`**
+- **Status lifecycle: `Todo → In Progress → In Review → Done → Deployed`** (the 2-PR flow
+  is in "Deployment pipeline" below)
   - `Todo`: issue created. `In Progress`: branch created (both by `create`).
-  - `In Review`: set by CI (`.github/workflows/task-lifecycle.yml`) when the PR opens.
-  - `Done`: set by CI when the PR **merges**; GitHub closes the issue via `Closes #<issue>`.
+  - `In Review`: set by CI (`.github/workflows/task-lifecycle.yml`) when the PR → `qa` opens.
+  - `Done`: set by CI when the PR **merges into `qa`** (PRE-PROD); CI also closes the issue,
+    because GitHub only acts on `Closes #<issue>` for merges into `main`.
     Nothing closes a task before its PR merges, and `Done` cannot be set by hand.
-  - `Deployed`: set by CI (`chatops-cicd.yml`) when a merged PR is released to prod
-    with a `release: <name>` comment. Cannot be set by hand either.
+  - `Deployed`: set by CI (`deployment-pipeline.yml`) when the `qa` → `main` release PR
+    merges with a `release: <name>` comment. Cannot be set by hand either.
   - **One-time setup, or the board never leaves `In Progress`:** CI can only move cards
     with a `PROJECT_TOKEN` repo secret (classic PAT, scopes `repo` + `project`). The
     built-in `GITHUB_TOKEN` cannot see a user-owned Project, so without it only the
@@ -59,7 +61,7 @@ How to do it:
   `pre-commit` blocks commits on badly named branches, commits of `qa-evidence/`, and
   `src/` commits without "✅ Manual check passed" in this branch's local report;
   `pre-push` blocks pushing badly named branches; `post-checkout` starts new worktrees
-  from the latest `origin/main`.
+  from the latest `origin/qa`.
 
 ---
 
@@ -74,7 +76,7 @@ knowledge of the system.
 work in parallel, isolated Claude Desktop Git worktrees while:
 
 1. Sharing one consistent application "brain" (the docs imported below).
-2. Protecting production with GitHub Actions CI gates on every pull request to `main`.
+2. Protecting production with GitHub Actions CI gates on every pull request to `qa` and `main`.
 
 ## Required context (always read)
 
@@ -118,7 +120,8 @@ Do not skip or reorder them, even if the user asks for a quick PR.
 
 4. **RULE 4: Use the audit report as the PR description.**
    Commit the code (not `qa-evidence/`), push the branch, then:
-   `gh pr create --base main --title "<title>" --body-file qa-evidence/PR_AUDIT_REPORT.md`
+   `gh pr create --base qa --title "<title>" --body-file qa-evidence/PR_AUDIT_REPORT.md`
+   Task PRs always target **`qa`**, never `main` (see "Deployment pipeline").
    The body carries the change's evidence, the manual check confirmation and
    `Closes #<issue>`. CI then posts the evidence comment (screenshot inline for UI
    changes) and uploads the `qa-evidence` Actions artifact, moves the
@@ -133,24 +136,34 @@ Do not skip or reorder them, even if the user asks for a quick PR.
 2. **Claude code review, advisory** (`.github/workflows/claude-code-review.yml`):
    inline review comments on every PR. Needs the `ANTHROPIC_API_KEY` repo secret.
 
-## 🌐 Environments (Phase 4: ChatOps on GitHub Pages)
+## 🌐 Deployment pipeline (2 PRs: feature → `qa` → `main`)
 
-One `main` branch, four environments on the `gh-pages` branch, driven by PR comments
-(`.github/workflows/chatops-cicd.yml`, built by `scripts/build-gh-pages.js`):
+Two long-lived branches: **`qa`** (integration, PRE-PROD) and **`main`** (production).
+Task branches start from `qa` and open their PR into `qa`; production ships through a
+second PR from `qa` into `main`. Deploys go to GitHub Pages (`gh-pages` branch) via
+`.github/workflows/deployment-pipeline.yml` and `scripts/build-gh-pages.js`:
 
-| Command / event | Environment | URL |
-|---|---|---|
-| Comment `deploy: true` or `deploy: test` on an open PR | DEV | `https://sanjeev0304.github.io/worktree-ci-prototype/dev/<taskId>/` |
-| Comment `deploy: <tag>` on an **approved** PR (or approve a PR that has one) | QA, tags the PR head | `.../qa/` |
-| PR merged to `main` | PRE-PROD | `.../pre-prod/` |
-| Comment `release: <name>` on a **merged** PR | PROD, GitHub Release, task `Deployed` | `.../prod/` |
+```
+Feature branch ─▶ STAGE ─▶ Testing + Evidence ─▶ PR → qa ─▶ QA (tag) ─▶ qa branch ─▶ PR qa → main ─▶ MAIN / PROD (release)
+```
 
-- The portal at `https://sanjeev0304.github.io/worktree-ci-prototype/` lists every live environment.
+| Stage | Trigger | Environment | URL |
+|---|---|---|---|
+| 1 | Push to a `<type>/<id>-<slug>` branch, or comment `deploy: true` / `deploy: stage` on its PR | STAGE / DEV (after the audit report + screenshot are generated and checked in CI) | `https://sanjeev0304.github.io/worktree-ci-prototype/stage/<taskId>/` (`dev/<taskId>/` redirects there) |
+| 2 | On the **PR → `qa`**: comment `deploy: qa-v1.2.0`, or add the label `qa-v1.2.0` | QA: tags the PR head `qa-v1.2.0` | `.../qa/` |
+| 2 | **PR → `qa` merged** | PRE-PROD; task → `Done`, issue closed | `.../pre-prod/` |
+| 3 | On the **PR `qa` → `main`**: comment `release: release-v1.2.0` (before or after merging) | MAIN / PROD on merge: GitHub Release + tag, every task in the release → `Deployed` | `.../prod/` |
+
+- QA tags are `qa-<version>`; release names are `release-<version>`. Neither can be reused.
+- Open the release PR with: `gh pr create --base main --head qa --title "Release v1.2.0" --body "Release v1.2.0"`.
+- `main` accepts **only** the release PR from `qa`; the CI gate fails any other PR into `main`.
+  The release PR skips the per-task checks (size, branch name, `Closes #N`, manual check),
+  which every task already passed on its way into `qa`.
+- The Environment Dashboard at `https://sanjeev0304.github.io/worktree-ci-prototype/` shows
+  the pipeline and every live environment.
 - Only the repo owner, members and collaborators can run these commands.
-- QA needs an approving review on the PR's latest commit. GitHub blocks approving your own
-  PR, so a `deploy: <tag>` from the repo **owner** is accepted as a logged self-check.
-- Each deploy rewrites only its own folder, plus the portal. Nothing is ever built from
-  a PR's scripts: the builder runs from `main` and reads the PR's `src/` as data.
+- The deploy job (the only one that can write) runs scripts from `main` and reads the
+  deployed `src/` as data. The stage evidence job runs the branch's code read-only.
 
 ## Commands
 
@@ -167,5 +180,6 @@ npm run check                               # lint + typecheck + unit + e2e + sm
 node src/server.js                          # run the app on http://localhost:3456
 node scripts/run-pre-pr-audit.js            # RULE 2: API telemetry + UI screenshot + report
 node scripts/run-pre-pr-audit.js --manual-passed "notes"   # RULE 3: record the user's manual check
-node scripts/build-gh-pages.js --env dev --task 22 --version local   # preview a Pages build in gh-pages-build/
+node scripts/build-gh-pages.js --env stage --task 23 --version local   # preview a Pages build in gh-pages-build/
+gh pr create --base main --head qa --title "Release v1.2.0" --body "Release v1.2.0"   # Stage 3 release PR
 ```

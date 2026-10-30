@@ -26,14 +26,22 @@ test('static build runs the real RULE #404 math in the browser bundle', () => {
   assert.match(runBundle(path.join(out, 'qa'), 'STANDARD', 1000)('r-total'), /1,180\.00/);
 });
 
-test('each environment only rewrites its own folder and the portal lists them all', () => {
+test('each environment only rewrites its own folder and the dashboard lists them all', () => {
   const out = fs.mkdtempSync(path.join(os.tmpdir(), 'gh-pages-'));
-  build({ env: 'dev', version: 'abc1234', task: '22', out });
-  build({ env: 'prod', version: 'v1.0.0', task: '22', taskStatus: 'Deployed', out });
-  assert.ok(fs.existsSync(path.join(out, 'dev/22/deploy.json')), 'dev build survives a prod deploy');
+  build({ env: 'stage', version: 'abc1234', task: '23', out });
+  build({ env: 'prod', version: 'release-v1.2.0', task: '23,24', taskStatus: 'Deployed', out });
+  assert.ok(fs.existsSync(path.join(out, 'stage/23/deploy.json')), 'stage build survives a prod deploy');
+  assert.match(fs.readFileSync(path.join(out, 'dev/23/index.html'), 'utf8'), /url=\.\.\/\.\.\/stage\/23\//);
   const portal = fs.readFileSync(path.join(out, 'index.html'), 'utf8');
   assert.match(portal, /href="prod\/"/);
-  assert.match(portal, /href="dev\/22\/"/);
-  assert.match(fs.readFileSync(path.join(out, 'prod/index.html'), 'utf8'), />PROD</);
-  assert.throws(() => subpathFor('dev', '../x'), /numeric/);
+  assert.match(portal, /href="stage\/23\/"/);
+  assert.match(portal, /PR qa → main/);
+  assert.match(fs.readFileSync(path.join(out, 'prod/index.html'), 'utf8'), />MAIN \/ PROD</);
+});
+
+test('stage folders are keyed by task id, else by a URL-safe branch name', () => {
+  assert.strictEqual(subpathFor('dev', '23'), 'stage/23');
+  assert.strictEqual(subpathFor('stage', '', 'Feat/My_Branch'), 'stage/feat-my-branch');
+  assert.strictEqual(subpathFor('stage', '', '../x'), 'stage/x');
+  assert.throws(() => subpathFor('stage', '', ''), /--task/);
 });

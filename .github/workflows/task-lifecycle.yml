@@ -2,9 +2,12 @@ name: Task Lifecycle
 
 # Moves the linked task through Todo -> In Progress -> In Review -> Done:
 #   PR opened / reopened / ready  -> In Review
-#   PR merged                     -> Done (GitHub itself closes the issue via "Closes #N")
+#   PR merged into qa             -> Done, and this job closes the issue (GitHub only acts on
+#                                    "Closes #N" for merges into the default branch, main)
+#   PR merged into main           -> Done (GitHub closes the issue via "Closes #N")
 #   PR closed without merging     -> In Progress
-# The issue is taken from the branch name <type>/<issue-id>-<short-description>.
+# The issue is taken from the branch name <type>/<issue-id>-<short-description>, so the
+# qa -> main release PR is skipped here; deployment-pipeline.yml moves its tasks to Deployed.
 #
 # REQUIRED: a PROJECT_TOKEN repo secret (classic PAT with "repo" + "project" scopes).
 # The built-in GITHUB_TOKEN cannot see a user-owned Projects board, so without the
@@ -13,7 +16,7 @@ name: Task Lifecycle
 
 on:
   pull_request:
-    branches: [main]
+    branches: [qa, main]
     types: [opened, reopened, ready_for_review, closed]
 
 permissions:
@@ -32,6 +35,8 @@ jobs:
           HEAD_REF: ${{ github.head_ref }}
           ACTION: ${{ github.event.action }}
           MERGED: ${{ github.event.pull_request.merged }}
+          BASE_REF: ${{ github.base_ref }}
+          REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
           HAS_PROJECT_TOKEN: ${{ secrets.PROJECT_TOKEN != '' }}
         run: |
@@ -41,14 +46,22 @@ jobs:
           fi
           ISSUE="$(sed -nE 's#^[a-z]+/([0-9]+)-.*#\1#p' <<< "$HEAD_REF")"
           if [ -z "$ISSUE" ]; then
-            echo "::warning::Branch $HEAD_REF has no issue id; nothing to sync."
+            echo "::notice::Branch $HEAD_REF has no issue id (release PRs never do); nothing to sync."
             exit 0
           fi
-          if [ "$ACTION" = "closed" ] && [ "$MERGED" = "true" ]; then
+          if [ "$ACTION" = "closed" ] && [ "$MERGED" = "true" ] && [ "$BASE_REF" = "qa" ]; then
+            STATUS="Done"; NOTE="PR #$PR merged into \`qa\` (deployed to PRE-PROD). It reaches PROD with the next release."
+          elif [ "$ACTION" = "closed" ] && [ "$MERGED" = "true" ]; then
             STATUS="Done"; NOTE="PR #$PR merged. GitHub closed this issue via \`Closes #$ISSUE\`."
           elif [ "$ACTION" = "closed" ]; then
             STATUS="In Progress"; NOTE="PR #$PR was closed without merging."
           else
             STATUS="In Review"; NOTE="PR #$PR is open for review."
           fi
-          node scripts/manage-project-task.js sync --issue "$ISSUE" --set "$STATUS" --note "$NOTE"
+          RC=0
+          node scripts/manage-project-task.js sync --issue "$ISSUE" --set "$STATUS" --note "$NOTE" || RC=$?
+          # Close even if the board update failed; the job still goes red below.
+          if [ "$STATUS" = "Done" ] && [ "$BASE_REF" = "qa" ]; then
+            gh issue close "$ISSUE" -R "$REPO" --reason completed --comment "Closed by PR #$PR (merged into \`qa\`)."
+          fi
+          exit "$RC"

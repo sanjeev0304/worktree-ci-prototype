@@ -18,8 +18,10 @@ const PATTERN = new RegExp(`^(${BRANCH_TYPES.join('|')})/([1-9][0-9]*)-([a-z0-9]
 // Default branch type for each task Type.
 const TYPE_FOR_TASK = { Task: 'feat', Issue: 'fix', Bug: 'fix' };
 
-// Long-lived branches that are not feature branches.
-const EXEMPT = ['main'];
+// Long-lived branches that are not feature branches: qa (integration) and main (production).
+const EXEMPT = ['main', 'qa'];
+// Task branches start from, and open their PR into, the integration branch.
+const INTEGRATION_BRANCH = 'qa';
 
 /** Returns { type, issue, slug } for a valid branch name, otherwise null. */
 function parseBranch(name) {
@@ -57,7 +59,7 @@ function explain(name) {
   ].join('\n');
 }
 
-module.exports = { BRANCH_TYPES, TYPE_FOR_TASK, EXEMPT, MAX_LENGTH, parseBranch, buildBranch, explain };
+module.exports = { BRANCH_TYPES, TYPE_FOR_TASK, EXEMPT, INTEGRATION_BRANCH, MAX_LENGTH, parseBranch, buildBranch, explain };
 
 if (require.main === module) {
   const [command, name] = process.argv.slice(2);

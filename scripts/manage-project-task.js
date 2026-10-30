@@ -14,8 +14,8 @@
  *   Todo         issue created                       (create)
  *   In Progress  branch <type>/<issue>-<slug> created (create, right after the issue)
  *   In Review    pull request opened                 (CI: .github/workflows/task-lifecycle.yml)
- *   Done         PR merged; GitHub closes the issue via "Closes #N" (CI, same workflow)
- *   Deployed     released to prod with "release: <name>" (CI: .github/workflows/chatops-cicd.yml)
+ *   Done         PR merged into qa; the issue is closed      (CI, same workflow)
+ *   Deployed     qa -> main release PR merged with "release: <name>" (CI: deployment-pipeline.yml)
  *   Blocked      work on hold                        (status --set Blocked)
  *
  * Commands:
@@ -59,8 +59,8 @@ const FIELDS = {
     { name: 'Todo', color: 'GRAY', description: 'Issue created, work not started' },
     { name: 'In Progress', color: 'YELLOW', description: 'Branch created, work under way' },
     { name: 'In Review', color: 'BLUE', description: 'Pull request open' },
-    { name: 'Done', color: 'GREEN', description: 'PR merged, issue closed by GitHub' },
-    { name: 'Deployed', color: 'PINK', description: 'Released to prod (release: <name>)' },
+    { name: 'Done', color: 'GREEN', description: 'PR merged into qa (pre-prod), issue closed' },
+    { name: 'Deployed', color: 'PINK', description: 'Released to prod (qa -> main, release: <name>)' },
     { name: 'Blocked', color: 'RED', description: 'Work on hold' },
   ],
 };
@@ -366,10 +366,15 @@ function startBranch(branchType, task) {
   const name = branches.buildBranch(branchType, task.issueNumber, task.taskName);
   const current = currentBranch();
   if (current === name) return name;
+  // Task branches start from the latest qa (their PR targets it), or main if there is no qa yet.
+  git('fetch', '--quiet', 'origin', branches.INTEGRATION_BRANCH);
+  const base = git('rev-parse', '--verify', '--quiet', `origin/${branches.INTEGRATION_BRANCH}`) ? `origin/${branches.INTEGRATION_BRANCH}` : 'origin/main';
   // A fresh worktree branch with no commits of its own is renamed, so no stray branch is left behind.
-  const ownCommits = git('rev-list', '--count', 'origin/main..HEAD');
+  const ownCommits = git('rev-list', '--count', `${base}..HEAD`);
   if (!branches.EXEMPT.includes(current) && current !== 'HEAD' && ownCommits === '0') {
     gitStrict('branch', '-m', name);
+  } else if (branches.EXEMPT.includes(current) || current === 'HEAD') {
+    gitStrict('switch', '-c', name, base);
   } else {
     gitStrict('switch', '-c', name);
   }
