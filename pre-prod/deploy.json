@@ -1,10 +1,10 @@
 {
   "env": "pre-prod",
-  "version": "qa@16df924",
-  "commit": "16df9247528e39c694659c79f94222dec6bbb2fd",
-  "task": "29",
-  "branch": "fix/29-pages-build-must-use-the-app-s-ui-styles",
+  "version": "qa@090d795",
+  "commit": "090d7950e2d08f85cdc3e20e951d6388f71533c5",
+  "task": "27",
+  "branch": "feat/27-dark-theme-black-background-with-white-text",
   "taskStatus": "Done",
-  "deployedAt": "2026-10-30T13:44:42.939Z",
+  "deployedAt": "2026-10-30T13:46:13.324Z",
   "url": "https://sanjeev0304.github.io/worktree-ci-prototype/pre-prod/"
 }
