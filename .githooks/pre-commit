@@ -4,12 +4,15 @@
 # 1. Commits go only to branches named <type>/<issue-id>-<short-description> (main is exempt).
 # 2. A commit that changes src/ needs a local audit report for THIS branch containing
 #    "✅ Manual check passed". qa-evidence/ is git-ignored: the report is checked on disk,
-#    never committed.
+#    never committed. The same report must carry the signed "🔐 Brain Vault Verified" line.
+# 3. src/core-engine.js, scripts/brain-guard.cjs and docs/brain.vault.enc are Lead Architect
+#    only: commit them with LEAD_ARCHITECT_OVERRIDE=1 (CI still checks the PR author).
 #
 # Turn on with: node scripts/install-hooks.js
 
 REPORT="qa-evidence/PR_AUDIT_REPORT.md"
 MARKER="✅ Manual check passed"
+VAULT_PROOF="🔐 Brain Vault Verified"
 BRANCH="$(git symbolic-ref --quiet --short HEAD || echo HEAD)"
 
 if [ "$BRANCH" != "HEAD" ] && ! node scripts/lib/branch-name.js check "$BRANCH"; then
@@ -21,6 +24,14 @@ fi
 # Evidence must never be committed, even with git add -f (removing old evidence is fine).
 if [ -n "$(git diff --cached --name-only --diff-filter=AM -- qa-evidence/)" ]; then
   echo "⛔ COMMIT BLOCKED: qa-evidence/ must not be committed. Run: git rm -r --cached qa-evidence"
+  exit 1
+fi
+
+LOCKED=$(git diff --cached --name-only -- src/core-engine.js scripts/brain-guard.cjs docs/brain.vault.enc)
+if [ -n "$LOCKED" ] && [ "${LEAD_ARCHITECT_OVERRIDE:-}" != "1" ]; then
+  echo "⛔ COMMIT BLOCKED: these files are Lead Architect only (docs/SAFETY_GUARDRAILS.md, Guardrails 1 and 7):"
+  echo "$LOCKED" | sed 's/^/    /'
+  echo "   The Lead Architect commits them with LEAD_ARCHITECT_OVERRIDE=1; CI checks the PR author."
   exit 1
 fi
 
@@ -48,6 +59,7 @@ fail() {
 
 [ -f "$REPORT" ] || fail "$REPORT does not exist (the audit was not run)."
 grep -qF "**Branch** \`$BRANCH\` ·" "$REPORT" || fail "$REPORT was generated on another branch. Re-run the audit here."
+grep -qF "$VAULT_PROOF" "$REPORT" || fail "$REPORT has no \"$VAULT_PROOF\" line (scripts/brain-guard.cjs did not pass). Re-run the audit."
 grep -qF "$MARKER" "$REPORT" || fail "$REPORT does not contain \"$MARKER\" (manual check not recorded)."
 
 exit 0

@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "deny": [
+      "Edit(src/core-engine.js)",
+      "Write(src/core-engine.js)",
+      "Edit(scripts/brain-guard.cjs)",
+      "Write(scripts/brain-guard.cjs)",
+      "Edit(docs/brain.vault.enc)",
+      "Write(docs/brain.vault.enc)",
+      "Edit(.github/workflows/**)",
+      "Write(.github/workflows/**)",
+      "Bash(node scripts/brain-guard.cjs --seal:*)",
+      "Bash(node scripts/brain-guard.cjs --reseal:*)"
+    ]
+  }
+}

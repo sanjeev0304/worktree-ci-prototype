@@ -126,6 +126,70 @@ jobs:
             gh pr comment "$PR" --body-file comment.md
           fi
 
+  # Brain Vault (Guardrail 7), split in two so the secret never meets PR code:
+  #   brain-probe  runs the PR's invoice math, no secrets, output is untrusted data
+  #   brain-vault  runs the BASE branch's guard with BRAIN_MASTER_KEY on that data
+  brain-probe:
+    name: Brain Vault probe (no secrets)
+    runs-on: ubuntu-latest
+    outputs:
+      results: ${{ steps.probe.outputs.results }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Run the PR's calculateInvoice() on the probe invoices
+        id: probe
+        run: echo "results=$(node scripts/brain-guard.cjs --probe | base64 -w0)" >> "$GITHUB_OUTPUT"
+
+  brain-vault:
+    name: Brain Vault verification
+    needs: brain-probe
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the base branch (trusted guard and vault)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted
+      - name: Check out the PR's files as data (never executed in this job)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: pr
+          sparse-checkout: |
+            src/
+            scripts/run-pre-pr-audit.js
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify the PR against the encrypted rules
+        env:
+          BRAIN_MASTER_KEY: ${{ secrets.BRAIN_MASTER_KEY }}
+          PROBE_RESULTS: ${{ needs.brain-probe.outputs.results }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          LEAD_ARCHITECTS: sanjeev0304
+        run: |
+          set -euo pipefail
+          if [ -z "$BRAIN_MASTER_KEY" ]; then
+            echo "::error title=Brain Vault::BRAIN_MASTER_KEY is not available (secret missing, or a PR from a fork)."
+            exit 1
+          fi
+          printf '%s' "$PROBE_RESULTS" | base64 -d > probe.json
+          # Only the Lead Architect may change the audit runner (and must re-seal before merging).
+          for lead in $LEAD_ARCHITECTS; do
+            if [ "$PR_AUTHOR" = "$lead" ]; then export ALLOW_RUNNER_CHANGE=true; fi
+          done
+          set +e
+          node trusted/scripts/brain-guard.cjs --verify --root pr --probe-file probe.json > verdict.txt 2>&1
+          rc=$?
+          set -e
+          { echo "## 🔐 Brain Vault verification"; echo; sed 's/^/- /' verdict.txt; } >> "$GITHUB_STEP_SUMMARY"
+          cat verdict.txt
+          exit $rc
+
   safety-gate:
     name: Safety & Blast Radius Gate
     runs-on: ubuntu-latest
@@ -151,6 +215,8 @@ jobs:
           set -euo pipefail
 
           CORE_FILE="src/core-engine.js"
+          VAULT_FILES_RE='^(scripts/brain-guard\.cjs|docs/brain\.vault\.enc)$'
+          VAULT_PROOF="🔐 Brain Vault Verified"
           MAX_LINES=80
           # Only application code counts toward the blast radius. Governance files
           # (.github/, scripts/, docs) are gated by CODEOWNERS review instead.
@@ -162,7 +228,7 @@ jobs:
           [ "$BASE_REF" = "main" ] && [ "$HEAD_REF" = "qa" ] && IS_RELEASE=true
 
           NUMSTAT="$(git diff --numstat "$RANGE")"
-          ADDED=0; REMOVED=0; FILE_ROWS=""; FILE_COUNT=0; CORE_TOUCHED=false; EVIDENCE_COMMITTED=false
+          ADDED=0; REMOVED=0; FILE_ROWS=""; FILE_COUNT=0; CORE_TOUCHED=false; VAULT_TOUCHED=false; EVIDENCE_COMMITTED=false
 
           while IFS=$'\t' read -r add del file; do
             [ -z "${file:-}" ] && continue
@@ -176,9 +242,11 @@ jobs:
               marker=" _not counted_"
             fi
             if [ "$file" = "$CORE_FILE" ]; then CORE_TOUCHED=true; marker=" ⛔ **RESTRICTED**"; fi
+            if [[ "$file" =~ $VAULT_FILES_RE ]]; then VAULT_TOUCHED=true; marker=" 🔐 **BRAIN VAULT**"; fi
             FILE_ROWS="${FILE_ROWS}| \`${file}\`${marker} | +${add} | -${del} |"$'\n'
           done <<< "$NUMSTAT"
           git diff --name-only "$RANGE" | grep -qx "$CORE_FILE" && CORE_TOUCHED=true
+          git diff --name-only "$RANGE" | grep -qE "$VAULT_FILES_RE" && VAULT_TOUCHED=true
           # Binary files show "-" in numstat; catch any newly added qa-evidence file too.
           git diff --name-only --diff-filter=AM "$RANGE" -- qa-evidence/ | grep -q . && EVIDENCE_COMMITTED=true
 
@@ -269,6 +337,22 @@ jobs:
             fail "Manual verification (Protocol RULE 3) not recorded in the PR body."
           fi
 
+          # 7. Brain Vault: the guard and the vault are Lead Architect only, and every task PR
+          #    carries the signed proof from its local audit (the brain-vault job re-checks it).
+          if [ "$IS_RELEASE" = true ]; then
+            VAULT_STATUS="⚪ **RELEASE**: each task PR carried its own Brain Vault proof."
+          elif [ "$VAULT_TOUCHED" = true ] && [ "$IS_LEAD" = false ]; then
+            VAULT_STATUS="🔴 **VIOLATION**: the Brain Vault guard or vault was modified by @${PR_AUTHOR}."
+            fail "\`scripts/brain-guard.cjs\` / \`docs/brain.vault.enc\` may only be changed by the Lead Architect."
+          elif ! grep -qF "$VAULT_PROOF" <<< "${PR_BODY:-}"; then
+            VAULT_STATUS="🔴 **MISSING**: no \`${VAULT_PROOF}\` line in the PR body."
+            fail "PR body has no \`${VAULT_PROOF}\` line. Run \`node scripts/run-pre-pr-audit.js\` and use the report as the body."
+          elif [ "$VAULT_TOUCHED" = true ]; then
+            VAULT_STATUS="🟡 **LEAD ARCHITECT CHANGE**: Brain Vault files modified by @${PR_AUTHOR}."
+          else
+            VAULT_STATUS="🟢 **VERIFIED**: signed proof in the PR body; re-checked by the **Brain Vault verification** job."
+          fi
+
           [ -z "$FILE_ROWS" ] && FILE_ROWS="| _(no file changes)_ | | |"$'\n'
           {
             echo "# 🛡️ Executive Safety & Blast Radius Report"
@@ -291,6 +375,7 @@ jobs:
             echo "| Branch name | ${BRANCH_STATUS} |"
             echo "| Linked task | ${TASK_STATUS} |"
             echo "| Manual check | ${MANUAL_STATUS} |"
+            echo "| Brain Vault | ${VAULT_STATUS} |"
             echo "| Evidence storage | ${EVIDENCE_STATUS} |"
             echo
             echo "Lint, typecheck, unit, e2e and smoke tests run in the **checks** job."

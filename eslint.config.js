@@ -17,7 +17,7 @@ module.exports = [
   { ignores: ['node_modules/', 'qa-evidence/', '.claude/'] },
   js.configs.recommended,
   {
-    files: ['**/*.js'],
+    files: ['**/*.js', '**/*.cjs'],
     languageOptions: { ecmaVersion: 2022, sourceType: 'commonjs', globals: { ...globals.node } },
     rules: {
       'no-unused-vars': ['error', { argsIgnorePattern: '^_', caughtErrors: 'none' }],

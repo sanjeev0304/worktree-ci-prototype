@@ -5,6 +5,11 @@
 # Restricted core layer: Lead Architect only.
 /src/core-engine.js        @sanjeev0304
 
+# Brain Vault (Phase 5): encrypted rules, their validator and Claude's permission locks.
+/scripts/brain-guard.cjs   @sanjeev0304
+/docs/brain.vault.enc      @sanjeev0304
+/.claude/                  @sanjeev0304
+
 # Governance: the gates themselves must not be weakened without the Lead Architect.
 /.github/                  @sanjeev0304
 /.githooks/                @sanjeev0304

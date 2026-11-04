@@ -156,6 +156,34 @@ Every pull request must go through these four steps, in order.
 - `.github/workflows/deployment-pipeline.yml` never runs PR code with a write token: the
   deploy job uses scripts from `main` and reads the deployed `src/` with `git archive`.
 
+## Guardrail 7: Brain Vault (encrypted rules, anti-tamper, DLP)
+
+- The business rules and architecture docs are AES-256-GCM encrypted in
+  `docs/brain.vault.enc`; `docs/BUSINESS_RULES.md` and `docs/ARCHITECTURE.md` are stubs.
+  `scripts/brain-guard.cjs` decrypts them in RAM only, never writes or prints the plain
+  text, and zeroes its buffers.
+- Envelope encryption: one data key, wrapped (a) with a key derived from an internal salt
+  plus the SHA-256 of `scripts/run-pre-pr-audit.js` (local, offline) and (b) with
+  `BRAIN_MASTER_KEY` (GitHub secret; the Lead Architect keeps a copy to re-seal).
+- **Anti-tamper:** changing the audit runner changes its checksum, so the guard aborts with
+  `🚨 TAMPER DETECTED` until the Lead Architect re-seals.
+- **4 factors** before a local verification: caller (`--verify`, or a token the audit signs
+  with its checksum; scraping flags get `🔒 ACCESS DENIED`), an active task in
+  `qa-evidence/active-task.json`, scoped verdicts only, and a signed
+  `🔐 Brain Vault Verified | Checksum | User | Timestamp | Sig` line in the report.
+- **CI:** the **Brain Vault verification** job runs the base branch's guard with
+  `BRAIN_MASTER_KEY` and treats the PR as data (its invoice math is probed in a separate job
+  with no secrets). The safety gate fails a PR whose body lacks `🔐 Brain Vault Verified`,
+  or that changes `scripts/brain-guard.cjs` / `docs/brain.vault.enc` unless its author is the
+  Lead Architect.
+- **Locks:** `.claude/settings.json` denies Claude edits to the core, the guard, the vault and
+  the workflows; CODEOWNERS and `.githooks/pre-commit` cover the same files.
+- **DLP:** Claude never quotes or reconstructs the proprietary rules (see CLAUDE.md).
+- **Limits (be honest about them):** the repo is public, so the original docs stay readable
+  in git history before this change, and the code itself necessarily contains the rates. The
+  local key is derived from files in the repo, so it deters casual reading and detects
+  tampering; it does not stop a determined reader. Real secrecy rests on `BRAIN_MASTER_KEY`.
+
 ## For Claude in any worktree
 
 - Check these guardrails before proposing or making a change.

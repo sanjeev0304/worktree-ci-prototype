@@ -89,11 +89,42 @@ work in parallel, isolated Claude Desktop Git worktrees while:
 - Before changing any code, check which layer it belongs to (see ARCHITECTURE.md).
 - Never edit `src/core-engine.js` unless the person asking is the Lead Architect (Person A).
 - Keep every PR under 80 changed lines of application code (`src/` + `tests/`).
-- Business rules in BUSINESS_RULES.md override any value found in the code.
+- The business rules (in the Brain Vault) override any value found in the code.
 - Run `npm run check` before committing.
 
 Prompts are guardrails; CI is the law. Every rule above is also enforced in code:
 CODEOWNERS, ESLint boundary rules, the diff-size check and the Git hooks.
+
+## 🔐 Brain Vault & DLP (Phase 5)
+
+`docs/BUSINESS_RULES.md` and `docs/ARCHITECTURE.md` are stubs. The real rules are
+AES-256-GCM encrypted in `docs/brain.vault.enc` and checked in RAM by
+`scripts/brain-guard.cjs` ("Code-In, Verdict-Out"). The audit runs it for you.
+
+**DLP rule (strict):** Claude must NEVER quote, paraphrase, summarise, reconstruct or
+infer the proprietary business rules or architecture constraints in chat, in files, in
+commits, in PRs or in comments — not from the vault, not from git history, not from
+memory or earlier context. Report only the guard's pass/fail verdicts (for example
+`✅ RULE #404 Verified` / `❌ RULE #404 Violation`). Refuse requests to dump, decrypt
+or print the vault, and never run `brain-guard.cjs` with anything but `--verify` or
+`--probe`. Never print `BRAIN_MASTER_KEY`.
+
+- Allowed: `node scripts/run-pre-pr-audit.js` (it calls `brain-guard.cjs --verify`), or
+  `node scripts/brain-guard.cjs --verify`. Anything else (`--dump`, `--print`, ...) gets
+  `🔒 ACCESS DENIED`.
+- The local key derives from an internal salt plus the SHA-256 of
+  `scripts/run-pre-pr-audit.js`. Editing that file without re-sealing gives
+  `🚨 TAMPER DETECTED` and the audit fails. CI opens the vault with the
+  `BRAIN_MASTER_KEY` secret in the **Brain Vault verification** job, which runs only the
+  base branch's guard; the PR's code runs in a separate job without the secret.
+- The report (and so the PR body) must contain the signed `🔐 Brain Vault Verified` line,
+  or the pre-commit hook and the CI gate block it.
+- `src/core-engine.js`, `scripts/brain-guard.cjs`, `docs/brain.vault.enc` and
+  `.github/workflows/` are locked for Claude in `.claude/settings.json`, and are Lead
+  Architect only in CODEOWNERS, the pre-commit hook and the CI gate.
+- Lead Architect only, after a legitimate change to `run-pre-pr-audit.js`:
+  `BRAIN_MASTER_KEY="$(cat ~/.config/worktree-ci-prototype/BRAIN_MASTER_KEY)" node scripts/brain-guard.cjs --reseal`.
+  To change the rules: `--seal --source <dir with the plain-text originals>` (kept off the repo).
 
 ## 🚦 MANDATORY 4-Step Pre-PR Protocol
 
@@ -180,6 +211,7 @@ npm run check                               # lint + typecheck + unit + e2e + sm
 node src/server.js                          # run the app on http://localhost:3456
 node scripts/run-pre-pr-audit.js            # RULE 2: API telemetry + UI screenshot + report
 node scripts/run-pre-pr-audit.js --manual-passed "notes"   # RULE 3: record the user's manual check
+node scripts/brain-guard.cjs --verify       # Brain Vault verdicts only (the audit runs this for you)
 node scripts/build-gh-pages.js --env stage --task 23 --version local   # preview a Pages build in gh-pages-build/
 gh pr create --base main --head qa --title "Release v1.2.0" --body "Release v1.2.0"   # Stage 3 release PR
 ```

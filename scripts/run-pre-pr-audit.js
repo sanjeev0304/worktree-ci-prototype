@@ -6,7 +6,11 @@
  * 2. Sends real POST requests to /api/calculate-invoice and times each with performance.now().
  * 3. Runs a browser check of the UI and saves qa-evidence/latest-ui-proof.png
  *    (Playwright → headless Chrome/Chromium → built-in PNG fallback).
- * 4. Writes qa-evidence/PR_AUDIT_REPORT.md, ready to use as the PR description.
+ * 4. Runs scripts/brain-guard.cjs --verify: the code is checked against the encrypted Brain
+ *    Vault in RAM, and the signed "🔐 Brain Vault Verified" line goes into the report.
+ *    The guard is called with a token signed with this file's checksum; editing this file
+ *    without re-sealing the vault makes the guard report TAMPER DETECTED.
+ * 5. Writes qa-evidence/PR_AUDIT_REPORT.md, ready to use as the PR description.
  *    It shows only the evidence this change needs (lib/evidence-scope.js): a screenshot for
  *    UI changes, API flight times and RULE #404 for calculation/API changes. The common
  *    checks always run but are summarised in one line, with the details folded away.
@@ -28,6 +32,7 @@
 'use strict';
 
 const fs = require('fs');
+const crypto = require('crypto');
 const os = require('os');
 const path = require('path');
 const http = require('http');
@@ -45,6 +50,8 @@ const EVIDENCE_DIR = path.join(ROOT, 'qa-evidence');
 const SCREENSHOT = path.join(EVIDENCE_DIR, 'latest-ui-proof.png');
 const REPORT = path.join(EVIDENCE_DIR, 'PR_AUDIT_REPORT.md');
 const SCOPE_FILE = path.join(EVIDENCE_DIR, 'scope.json');
+const BRAIN_GUARD = path.join(ROOT, 'scripts', 'brain-guard.cjs');
+const VAULT_PROOF = '🔐 Brain Vault Verified';
 
 // RULE #404 (docs/BUSINESS_RULES.md)
 const GST = 0.18;
@@ -118,6 +125,36 @@ function changeScope() {
   const scope = scopeFromDiff([git(`diff -U0 ${base}`), ...untracked].join('\n'));
   log(`Changed files: ${scope.files.join(', ') || 'none'} → ${describeScope(scope)}.`);
   return scope;
+}
+
+// ---------- Brain Vault ----------
+/** Token proving the guard was started by this audit: HMAC over nonce + pid, keyed by this file's checksum. */
+function brainGuardToken() {
+  const nonce = crypto.randomBytes(16).toString('hex');
+  const key = crypto.createHash('sha256').update(fs.readFileSync(__filename)).digest();
+  return `${nonce}.${process.pid}.${crypto.createHmac('sha256', key).update(`${nonce}.${process.pid}`).digest('hex')}`;
+}
+
+/** Runs brain-guard.cjs --verify. CI verifies in its own job, with BRAIN_MASTER_KEY. */
+function runBrainGuard(args) {
+  if (args.ci) return { ok: null, lines: [], proof: null };
+  const r = spawnSync(process.execPath, [BRAIN_GUARD, '--verify'], {
+    cwd: ROOT,
+    env: { ...process.env, BRAIN_GUARD_TOKEN: brainGuardToken() },
+    encoding: 'utf8',
+    timeout: 60000,
+  });
+  const lines = `${r.stdout || ''}${r.stderr || ''}`.split('\n').filter(Boolean);
+  for (const line of lines) log(`Brain Vault: ${line}`);
+  const proof = lines.find((l) => l.startsWith(VAULT_PROOF)) || null;
+  return { ok: r.status === 0 && Boolean(proof), lines, proof };
+}
+
+function vaultSection(vault) {
+  const out = ['## 🔐 Brain Vault', ''];
+  out.push(...vault.lines.filter((l) => l !== vault.proof).map((l) => `- ${l}`), '');
+  out.push(vault.ok ? `**${vault.proof}**` : '**❌ Brain Vault NOT verified.** The PR will be blocked by CI.', '');
+  return out;
 }
 
 // ---------- HTTP helpers ----------
@@ -390,16 +427,17 @@ function ruleSection(primary) {
 const average = (results) => results.reduce((a, r) => a + r.ms, 0) / results.length;
 
 /** One line for the checks every PR gets, whatever it changed. */
-function commonChecksLine(results, primary, shotMethod, args) {
+function commonChecksLine(results, primary, shotMethod, args, vault) {
   const okCount = results.filter((r) => r.ok).length;
   const api = `${okCount === results.length ? '✅' : '❌'} API: ${okCount}/${results.length} calls as expected (avg ${average(results).toFixed(2)} ms)`;
   const rule = primary && primary.rule === 'PASS' ? '✅ RULE #404' : '❌ RULE #404';
   const ui = !shotMethod ? '❌ UI: no screenshot' : uiTotalMatches === false ? '❌ UI total differs from API' : '✅ UI renders';
   const tests = args.ci ? 'lint, typecheck and tests: **checks** job' : 'lint, typecheck and tests: `npm run check`';
-  return `${api} · ${rule} · ${ui} · ${tests}`;
+  const brain = args.ci ? '🔐 Brain Vault: **Brain Vault verification** job' : vault.ok ? '✅ Brain Vault' : '❌ Brain Vault';
+  return `${api} · ${rule} · ${ui} · ${brain} · ${tests}`;
 }
 
-function buildReport({ info, results, shotMethod, args, generatedAt, task, scope }) {
+function buildReport({ info, results, shotMethod, args, generatedAt, task, scope, vault }) {
   const primary = results.find((r) => r.primary);
   const imageUrl = process.env.EVIDENCE_IMAGE_URL;
 
@@ -431,7 +469,7 @@ function buildReport({ info, results, shotMethod, args, generatedAt, task, scope
   }
   if (!scope.ui && !scope.api) out.push('_This PR changes no app behaviour, so there is nothing app-specific to show._', '');
 
-  out.push('## Common checks (every PR)', '', commonChecksLine(results, primary, shotMethod, args), '');
+  out.push('## Common checks (every PR)', '', commonChecksLine(results, primary, shotMethod, args, vault), '');
   out.push('<details><summary>Full details</summary>', '');
   if (!scope.api) out.push('### API flight times', '', ...apiSection(results), '### RULE #404', '', ...ruleSection(primary));
   results.forEach((r, i) => {
@@ -444,6 +482,7 @@ function buildReport({ info, results, shotMethod, args, generatedAt, task, scope
     return out.join('\n');
   }
 
+  out.push(...vaultSection(vault));
   out.push('## Manual Verification (Protocol RULE 3)', '');
   if (args.manualPassed) {
     out.push(`**✅ Manual check passed** — confirmed by ${info.author} on ${generatedAt}`, '');
@@ -460,6 +499,7 @@ function buildReport({ info, results, shotMethod, args, generatedAt, task, scope
   out.push(`- [${branches.parseBranch(info.branch) ? 'x' : ' '}] Branch follows \`<type>/<issue-id>-<short-description>\``);
   out.push('- [x] RULE 1: PR not opened straight after editing code');
   out.push(`- [x] RULE 2: Pre-PR audit run (API telemetry + screenshot)`);
+  out.push(`- [${vault.ok ? 'x' : ' '}] Brain Vault verified (\`scripts/brain-guard.cjs\`)`);
   out.push(`- [${args.manualPassed ? 'x' : ' '}] RULE 3: Manual check on ${BASE_URL} confirmed by the user`);
   out.push('- [x] RULE 4: This report is the PR description (`gh pr create --body-file qa-evidence/PR_AUDIT_REPORT.md`)');
   out.push('', '</details>', '', '---', '_Generated by `scripts/run-pre-pr-audit.js`._', '');
@@ -496,6 +536,8 @@ async function main() {
     const scope = changeScope();
     fs.writeFileSync(SCOPE_FILE, JSON.stringify(scope, null, 2));
     if (!shotMethod) exitCode = 1;
+    const vault = runBrainGuard(args);
+    if (vault.ok === false) exitCode = 1;
 
     if (args.manualPassed) {
       log(`Manual check recorded as PASSED by ${info.author}. Open the PR with this report as its body.`);
@@ -503,9 +545,10 @@ async function main() {
     log(`Audit finished: ${exitCode === 0 ? 'evidence complete' : 'evidence INCOMPLETE'}.`);
 
     const generatedAt = new Date().toISOString();
-    fs.writeFileSync(REPORT, buildReport({ info, results, shotMethod, args, generatedAt, task, scope }));
+    fs.writeFileSync(REPORT, buildReport({ info, results, shotMethod, args, generatedAt, task, scope, vault }));
     console.log(`\nReport written: qa-evidence/PR_AUDIT_REPORT.md`);
     if (primary.rule === 'FAIL') console.log('⚠️  RULE #404 is violated by the current code (see the RULE #404 table in the report).');
+    if (vault.ok === false) console.log('❌ Brain Vault not verified (see the Brain Vault section of the report).');
     if (!task && !args.ci) console.log('❌ No linked GitHub Project task: run node scripts/manage-project-task.js create ... then re-run the audit.');
     if (!args.manualPassed && !args.ci) console.log('⏳ Manual check pending: test http://localhost:3456, then re-run with --manual-passed "<notes>".');
   } catch (err) {

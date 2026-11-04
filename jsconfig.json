@@ -11,5 +11,5 @@
     "maxNodeModuleJsDepth": 0,
     "strict": false
   },
-  "include": ["src/**/*.js", "scripts/**/*.js", "tests/**/*.js"]
+  "include": ["src/**/*.js", "scripts/**/*.js", "scripts/**/*.cjs", "tests/**/*.js"]
 }
